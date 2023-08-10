@@ -38,7 +38,7 @@
 - [Building Pinot](#building-pinot)
 - [Deploying Pinot to Kubernetes](#deploying-pinot-to-kubernetes)
 - [Join the Community](#join-the-community)
-- [Documentation](#documentation)
+- [Check out our documentation](#documentation). To **request a documentation update** or report a documentation issue, create an issue in the [pinot-docs](https://github.com/pinot-contrib/pinot-docs) repository.
 - [License](#license)
 
 # What is Apache Pinot?
