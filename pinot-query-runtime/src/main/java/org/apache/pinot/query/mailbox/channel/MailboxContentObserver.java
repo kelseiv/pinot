@@ -77,13 +77,32 @@ public class MailboxContentObserver implements StreamObserver<MailboxContent> {
       }
 
       long timeoutMs = Context.current().getDeadline().timeRemaining(TimeUnit.MILLISECONDS);
-      if (_mailbox.offer(block, timeoutMs)) {
-        _responseObserver.onNext(MailboxStatus.newBuilder().setMailboxId(mailboxId)
-            .putMetadata(ChannelUtils.MAILBOX_METADATA_BUFFER_SIZE_KEY,
-                Integer.toString(_mailbox.getNumPendingBlocks())).build());
-      } else {
-        LOGGER.warn("Failed to add block into mailbox: {} within timeout: {}ms", mailboxId, timeoutMs);
-        cancelStream();
+      ReceivingMailbox.ReceivingMailboxStatus status = _mailbox.offer(block, timeoutMs);
+      switch (status) {
+        case SUCCESS:
+          _responseObserver.onNext(MailboxStatus.newBuilder().setMailboxId(mailboxId)
+              .putMetadata(ChannelUtils.MAILBOX_METADATA_BUFFER_SIZE_KEY,
+                  Integer.toString(_mailbox.getNumPendingBlocks())).build());
+          break;
+        case CANCELLED:
+          LOGGER.warn("Mailbox: {} already cancelled from upstream", mailboxId);
+          cancelStream();
+          break;
+        case ERROR:
+          LOGGER.warn("Mailbox: {} already errored out (received error block before)", mailboxId);
+          cancelStream();
+          break;
+        case TIMEOUT:
+          LOGGER.warn("Timed out adding block into mailbox: {} with timeout: {}ms", mailboxId, timeoutMs);
+          cancelStream();
+          break;
+        case EARLY_TERMINATED:
+          LOGGER.debug("Mailbox: {} has been early terminated", mailboxId);
+          _responseObserver.onNext(MailboxStatus.newBuilder().setMailboxId(mailboxId)
+              .putMetadata(ChannelUtils.MAILBOX_METADATA_REQUEST_EARLY_TERMINATE, "true").build());
+          break;
+        default:
+          throw new IllegalStateException("Unsupported mailbox status: " + status);
       }
     } catch (Exception e) {
       String errorMessage = "Caught exception while processing blocks for mailbox: " + mailboxId;

@@ -241,6 +241,14 @@ public class DateTimeFunctionsTest {
         "fromDateTime(dateTime, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z''')", Lists.newArrayList("dateTime"), row113, null
     });
 
+    // fromDateTime with malformed dateTime and default Value should return -1
+    GenericRow row114 = new GenericRow();
+    row114.putValue("dateTime", "malformed_string");
+    inputs.add(new Object[]{
+        "fromDateTime(dateTime, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z''', 'UTC', -1)", Lists.newArrayList("dateTime"),
+        row114, -1L
+    });
+
     // timezone_hour and timezone_minute
     List<String> expectedArguments = Collections.singletonList("tz");
     GenericRow row120 = new GenericRow();
@@ -531,6 +539,9 @@ public class DateTimeFunctionsTest {
     testDateTimeConvert("20180418T01:00:00", "1:HOURS:SIMPLE_DATE_FORMAT:yyyyMMdd''T''HH:mm:ss",
         "1:MILLISECONDS:SIMPLE_DATE_FORMAT:yyyy-MM-dd HH:mm:ss.SSS tz(America/Los_Angeles)", "1:DAYS",
         "2018-04-17 00:00:00.000");
+    // Test time value with scientific number
+    testDateTimeConvert(1.50598536E12/* 20170921T02:16:00 */, "1:MILLISECONDS:EPOCH",
+        "1:DAYS:SIMPLE_DATE_FORMAT:yyyyMMdd", "1:DAYS", "20170921");
   }
 
   @Test

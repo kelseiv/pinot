@@ -18,117 +18,80 @@
  */
 package org.apache.pinot.query.runtime.operator.exchange;
 
+import com.google.common.base.Preconditions;
 import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
+import javax.annotation.Nullable;
 import org.apache.calcite.rel.RelDistribution;
 import org.apache.pinot.common.datablock.DataBlock;
 import org.apache.pinot.query.mailbox.SendingMailbox;
-import org.apache.pinot.query.planner.partitioning.KeySelector;
+import org.apache.pinot.query.planner.partitioning.KeySelectorFactory;
 import org.apache.pinot.query.runtime.blocks.BlockSplitter;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
-import org.apache.pinot.query.runtime.blocks.TransferableBlockUtils;
-import org.apache.pinot.query.runtime.operator.OpChainId;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 
 /**
- * This class contains the shared logic across all different exchange types for
- * exchanging data across different servers.
- *
- * {@link BlockExchange} is used by {@link org.apache.pinot.query.runtime.operator.MailboxSendOperator} to
- * exchange data between underlying {@link org.apache.pinot.query.mailbox.MailboxService} and the query stage execution
- * engine running the actual {@link org.apache.pinot.query.runtime.operator.OpChain}.
+ * This class contains the shared logic across all different exchange types for exchanging data across servers.
  */
 public abstract class BlockExchange {
-  public static final int DEFAULT_MAX_PENDING_BLOCKS = 5;
-  private static final Logger LOGGER = LoggerFactory.getLogger(BlockExchange.class);
   // TODO: Deduct this value via grpc config maximum byte size; and make it configurable with override.
   // TODO: Max block size is a soft limit. only counts fixedSize datatable byte buffer
   private static final int MAX_MAILBOX_CONTENT_SIZE_BYTES = 4 * 1024 * 1024;
 
-  private final OpChainId _opChainId;
   private final List<SendingMailbox> _sendingMailboxes;
   private final BlockSplitter _splitter;
-  private final Consumer<OpChainId> _callback;
-  private final long _deadlineMs;
 
-  private final BlockingQueue<TransferableBlock> _queue = new ArrayBlockingQueue<>(DEFAULT_MAX_PENDING_BLOCKS);
-  private final AtomicReference<TransferableBlock> _errorBlock = new AtomicReference<>();
-
-  public static BlockExchange getExchange(OpChainId opChainId, List<SendingMailbox> sendingMailboxes,
-      RelDistribution.Type exchangeType, KeySelector<Object[], Object[]> selector, BlockSplitter splitter,
-      Consumer<OpChainId> callback, long deadlineMs) {
-    switch (exchangeType) {
+  public static BlockExchange getExchange(List<SendingMailbox> sendingMailboxes, RelDistribution.Type distributionType,
+      @Nullable List<Integer> distributionKeys, BlockSplitter splitter) {
+    switch (distributionType) {
       case SINGLETON:
-        return new SingletonExchange(opChainId, sendingMailboxes, splitter, callback, deadlineMs);
+        return new SingletonExchange(sendingMailboxes, splitter);
       case HASH_DISTRIBUTED:
-        return new HashExchange(opChainId, sendingMailboxes, selector, splitter, callback, deadlineMs);
+        Preconditions.checkArgument(distributionKeys != null,
+            "Distribution keys must be provided for hash distribution");
+        return new HashExchange(sendingMailboxes, KeySelectorFactory.getKeySelector(distributionKeys), splitter);
       case RANDOM_DISTRIBUTED:
-        return new RandomExchange(opChainId, sendingMailboxes, splitter, callback, deadlineMs);
+        return new RandomExchange(sendingMailboxes, splitter);
       case BROADCAST_DISTRIBUTED:
-        return new BroadcastExchange(opChainId, sendingMailboxes, splitter, callback, deadlineMs);
+        return new BroadcastExchange(sendingMailboxes, splitter);
       case ROUND_ROBIN_DISTRIBUTED:
       case RANGE_DISTRIBUTED:
       case ANY:
       default:
-        throw new UnsupportedOperationException("Unsupported mailbox exchange type: " + exchangeType);
+        throw new UnsupportedOperationException("Unsupported distribution type: " + distributionType);
     }
   }
 
-  protected BlockExchange(OpChainId opChainId, List<SendingMailbox> sendingMailboxes, BlockSplitter splitter,
-      Consumer<OpChainId> callback, long deadlineMs) {
-    _opChainId = opChainId;
+  protected BlockExchange(List<SendingMailbox> sendingMailboxes, BlockSplitter splitter) {
     _sendingMailboxes = sendingMailboxes;
     _splitter = splitter;
-    _callback = callback;
-    _deadlineMs = deadlineMs;
   }
 
-  public boolean offerBlock(TransferableBlock block, long timeoutMs)
+  /**
+   * API to send a block to the destination mailboxes.
+   * @param block the block to be transferred
+   * @return true if all the mailboxes has been early terminated.
+   * @throws Exception when sending stream unexpectedly closed.
+   */
+  public boolean send(TransferableBlock block)
       throws Exception {
-    return _queue.offer(block, timeoutMs, TimeUnit.MILLISECONDS);
-  }
-
-  public int getRemainingCapacity() {
-    return _queue.remainingCapacity();
-  }
-
-  public TransferableBlock send() {
-    try {
-      TransferableBlock block;
-      long timeoutMs = _deadlineMs - System.currentTimeMillis();
-      if (_errorBlock.get() != null) {
-        LOGGER.debug("Exchange: {} is already cancelled or errored out internally, ignore the late block", _opChainId);
-        return _errorBlock.get();
+    if (block.isEndOfStreamBlock()) {
+      for (SendingMailbox sendingMailbox : _sendingMailboxes) {
+        sendBlock(sendingMailbox, block);
       }
-      block = _queue.poll(timeoutMs, TimeUnit.MILLISECONDS);
-      if (block == null) {
-        block = TransferableBlockUtils.getErrorTransferableBlock(
-            new TimeoutException("Timed out on exchange for opChain: " + _opChainId));
-      } else {
-        // Notify that the block exchange can now accept more blocks.
-        _callback.accept(_opChainId);
-        if (block.isEndOfStreamBlock()) {
-          for (SendingMailbox sendingMailbox : _sendingMailboxes) {
-            sendBlock(sendingMailbox, block);
-          }
-        } else {
-          route(_sendingMailboxes, block);
+      return false;
+    } else {
+      boolean isEarlyTerminated = true;
+      for (SendingMailbox sendingMailbox : _sendingMailboxes) {
+        if (!sendingMailbox.isEarlyTerminated()) {
+          isEarlyTerminated = false;
+          break;
         }
       }
-      return block;
-    } catch (Exception e) {
-      TransferableBlock errorBlock = TransferableBlockUtils.getErrorTransferableBlock(
-          new RuntimeException("Exception while sending data via exchange for opChain: " + _opChainId));
-      setErrorBlock(errorBlock);
-      return errorBlock;
+      if (!isEarlyTerminated) {
+        route(_sendingMailboxes, block);
+      }
+      return isEarlyTerminated;
     }
   }
 
@@ -144,19 +107,6 @@ public abstract class BlockExchange {
     Iterator<TransferableBlock> splits = _splitter.split(block, type, MAX_MAILBOX_CONTENT_SIZE_BYTES);
     while (splits.hasNext()) {
       sendingMailbox.send(splits.next());
-    }
-  }
-
-  private void setErrorBlock(TransferableBlock errorBlock) {
-    if (_errorBlock.compareAndSet(null, errorBlock)) {
-      try {
-        for (SendingMailbox sendingMailbox : _sendingMailboxes) {
-          sendBlock(sendingMailbox, errorBlock);
-        }
-      } catch (Exception e) {
-        LOGGER.error("error while sending exception block via exchange for opChain: " + _opChainId, e);
-      }
-      _queue.clear();
     }
   }
 

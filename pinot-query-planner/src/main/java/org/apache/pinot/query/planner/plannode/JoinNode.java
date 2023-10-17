@@ -21,10 +21,9 @@ package org.apache.pinot.query.planner.plannode;
 import java.util.Arrays;
 import java.util.List;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.hint.RelHint;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.query.planner.logical.RexExpression;
-import org.apache.pinot.query.planner.partitioning.FieldSelectionKeySelector;
-import org.apache.pinot.query.planner.partitioning.KeySelector;
 import org.apache.pinot.query.planner.serde.ProtoProperties;
 
 
@@ -36,6 +35,8 @@ public class JoinNode extends AbstractPlanNode {
   @ProtoProperties
   private List<RexExpression> _joinClause;
   @ProtoProperties
+  private NodeHint _joinHints;
+  @ProtoProperties
   private List<String> _leftColumnNames;
   @ProtoProperties
   private List<String> _rightColumnNames;
@@ -45,13 +46,14 @@ public class JoinNode extends AbstractPlanNode {
   }
 
   public JoinNode(int planFragmentId, DataSchema dataSchema, DataSchema leftSchema, DataSchema rightSchema,
-      JoinRelType joinRelType, JoinKeys joinKeys, List<RexExpression> joinClause) {
+      JoinRelType joinRelType, JoinKeys joinKeys, List<RexExpression> joinClause, List<RelHint> joinHints) {
     super(planFragmentId, dataSchema);
     _leftColumnNames = Arrays.asList(leftSchema.getColumnNames());
     _rightColumnNames = Arrays.asList(rightSchema.getColumnNames());
     _joinRelType = joinRelType;
     _joinKeys = joinKeys;
     _joinClause = joinClause;
+    _joinHints = new NodeHint(joinHints);
   }
 
   public JoinRelType getJoinRelType() {
@@ -64,6 +66,10 @@ public class JoinNode extends AbstractPlanNode {
 
   public List<RexExpression> getJoinClauses() {
     return _joinClause;
+  }
+
+  public NodeHint getJoinHints() {
+    return _joinHints;
   }
 
   public List<String> getLeftColumnNames() {
@@ -86,24 +92,24 @@ public class JoinNode extends AbstractPlanNode {
 
   public static class JoinKeys {
     @ProtoProperties
-    private KeySelector<Object[], Object[]> _leftJoinKeySelector;
+    private List<Integer> _leftKeys;
     @ProtoProperties
-    private KeySelector<Object[], Object[]> _rightJoinKeySelector;
+    private List<Integer> _rightKeys;
 
     public JoinKeys() {
     }
 
-    public JoinKeys(FieldSelectionKeySelector leftKeySelector, FieldSelectionKeySelector rightKeySelector) {
-      _leftJoinKeySelector = leftKeySelector;
-      _rightJoinKeySelector = rightKeySelector;
+    public JoinKeys(List<Integer> leftKeys, List<Integer> rightKeys) {
+      _leftKeys = leftKeys;
+      _rightKeys = rightKeys;
     }
 
-    public KeySelector<Object[], Object[]> getLeftJoinKeySelector() {
-      return _leftJoinKeySelector;
+    public List<Integer> getLeftKeys() {
+      return _leftKeys;
     }
 
-    public KeySelector<Object[], Object[]> getRightJoinKeySelector() {
-      return _rightJoinKeySelector;
+    public List<Integer> getRightKeys() {
+      return _rightKeys;
     }
   }
 }

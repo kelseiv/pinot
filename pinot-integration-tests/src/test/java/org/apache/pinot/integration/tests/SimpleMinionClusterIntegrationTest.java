@@ -90,6 +90,9 @@ public class SimpleMinionClusterIntegrationTest extends ClusterTest {
             .forCluster(helixResourceManager.getHelixClusterName()).build(), properties);
 
     // Add 3 offline tables, where 2 of them have TestTask enabled
+    addDummySchema(TABLE_NAME_1);
+    addDummySchema(TABLE_NAME_2);
+    addDummySchema(TABLE_NAME_3);
     TableTaskConfig taskConfig = new TableTaskConfig(Collections.singletonMap(TASK_TYPE, Collections.emptyMap()));
     addTableConfig(
         new TableConfigBuilder(TableType.OFFLINE).setTableName(TABLE_NAME_1).setTaskConfig(taskConfig).build());
@@ -130,7 +133,6 @@ public class SimpleMinionClusterIntegrationTest extends ClusterTest {
     HOLD.set(true);
     // No tasks before we start.
     assertEquals(_helixTaskResourceManager.getTasksInProgress(TASK_TYPE).size(), 0);
-    verifyTaskCount("Task_" + TASK_TYPE + "_1624403781879", 0, 0, 0, 0);
 
     // Should create the task queues and generate a task
     String task1 = _taskManager.scheduleTasks().get(TASK_TYPE);
@@ -166,11 +168,11 @@ public class SimpleMinionClusterIntegrationTest extends ClusterTest {
           return false;
         }
       }
-      assertTrue(TASK_START_NOTIFIED.get());
       assertFalse(TASK_SUCCESS_NOTIFIED.get());
       assertFalse(TASK_CANCELLED_NOTIFIED.get());
       assertFalse(TASK_ERROR_NOTIFIED.get());
-      return true;
+      // Task start callback is triggered shortly after the task start execution asynchronously
+      return TASK_START_NOTIFIED.get();
     }, STATE_TRANSITION_TIMEOUT_MS, "Failed to get all tasks IN_PROGRESS");
 
     // Wait at most 30 seconds for ZK callback to update the controller gauges
@@ -200,9 +202,9 @@ public class SimpleMinionClusterIntegrationTest extends ClusterTest {
       }
       assertTrue(TASK_START_NOTIFIED.get());
       assertFalse(TASK_SUCCESS_NOTIFIED.get());
-      assertTrue(TASK_CANCELLED_NOTIFIED.get());
       assertFalse(TASK_ERROR_NOTIFIED.get());
-      return true;
+      // Task cancelled callback is triggered shortly after the task framework cancels the task asynchronously
+      return TASK_CANCELLED_NOTIFIED.get();
     }, STATE_TRANSITION_TIMEOUT_MS, "Failed to get all tasks STOPPED");
 
     // Wait at most 30 seconds for ZK callback to update the controller gauges

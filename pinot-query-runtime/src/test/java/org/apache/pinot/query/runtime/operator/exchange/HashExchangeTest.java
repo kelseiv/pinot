@@ -27,7 +27,6 @@ import org.apache.pinot.query.mailbox.SendingMailbox;
 import org.apache.pinot.query.planner.partitioning.KeySelector;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlockUtils;
-import org.apache.pinot.query.runtime.operator.OpChainId;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -71,8 +70,7 @@ public class HashExchangeTest {
     ImmutableList<SendingMailbox> destinations = ImmutableList.of(_mailbox1, _mailbox2);
 
     // When:
-    new HashExchange(new OpChainId(1, 2, 3), destinations, selector, TransferableBlockUtils::splitBlock,
-        (opChainId) -> { }, System.currentTimeMillis() + 10_000L).route(destinations, _block);
+    new HashExchange(destinations, selector, TransferableBlockUtils::splitBlock).route(destinations, _block);
 
     // Then:
     ArgumentCaptor<TransferableBlock> captor = ArgumentCaptor.forClass(TransferableBlock.class);
@@ -85,9 +83,7 @@ public class HashExchangeTest {
     Assert.assertEquals(captor.getValue().getContainer().get(0), new Object[]{2});
   }
 
-  private static class TestSelector implements KeySelector<Object[], Object[]> {
-    private static final String HASH_ALGORITHM = "dummyHash";
-
+  private static class TestSelector implements KeySelector<Object> {
     private final Iterator<Integer> _hashes;
 
     public TestSelector(Iterator<Integer> hashes) {
@@ -95,18 +91,13 @@ public class HashExchangeTest {
     }
 
     @Override
-    public Object[] getKey(Object[] input) {
+    public Object getKey(Object[] input) {
       throw new UnsupportedOperationException("Should not be called");
     }
 
     @Override
     public int computeHash(Object[] input) {
       return _hashes.next();
-    }
-
-    @Override
-    public String hashAlgorithm() {
-      return HASH_ALGORITHM;
     }
   }
 }

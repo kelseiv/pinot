@@ -119,7 +119,7 @@ export const cleanupTasks = (taskType: string): Promise<AxiosResponse<OperationR
 export const deleteTasks = (taskType: string): Promise<AxiosResponse<OperationResponse>> =>
   baseApi.delete(`/tasks/${taskType}`, { headers: { ...headers, Accept: 'application/json' } });
 
-export const sheduleTask = (tableName: string, taskType: string): Promise<AxiosResponse<OperationResponse>> =>
+export const scheduleTask = (tableName: string, taskType: string): Promise<AxiosResponse<OperationResponse>> =>
   baseApi.post(`/tasks/schedule?tableName=${tableName}&taskType=${taskType}`, null, { headers: { ...headers, Accept: 'application/json' } });
 
 export const executeTask = (data): Promise<AxiosResponse<OperationResponse>> =>
@@ -198,7 +198,7 @@ export const reloadAllSegments = (tableName: string, tableType: string): Promise
   baseApi.post(`/segments/${tableName}/reload?type=${tableType}`, null, {headers});
 
 export const reloadStatus = (tableName: string, tableType: string): Promise<AxiosResponse<OperationResponse>> =>
-  baseApi.get(`/segments/${tableName}/metadata?type=${tableType}&columns=*`);
+  baseApi.get(`/tables/${tableName}/indexes?type=${tableType}`);
 
 export const deleteSegment = (tableName: string, instanceName: string): Promise<AxiosResponse<OperationResponse>> =>
   baseApi.delete(`/segments/${tableName}/${instanceName}`, {headers});
@@ -229,13 +229,13 @@ export const rebalanceBrokersForTable = (tableName: string): Promise<AxiosRespon
   baseApi.post(`/tables/${tableName}/rebuildBrokerResourceFromHelixTags`, null, {headers});
 
 export const validateSchema = (schemaObject: string): Promise<AxiosResponse<OperationResponse>> =>
-  baseApi.post(`/schemas/validate`, JSON.stringify(schemaObject), {headers});
+  baseApi.post(`/schemas/validate`, schemaObject, {headers});
 
 export const validateTable = (tableObject: string): Promise<AxiosResponse<OperationResponse>> =>
   baseApi.post(`/tables/validate`, JSON.stringify(tableObject), {headers});
 
 export const saveSchema = (schemaObject: string): Promise<AxiosResponse<OperationResponse>> =>
-  baseApi.post(`/schemas`, JSON.stringify(schemaObject), {headers});
+  baseApi.post(`/schemas`, schemaObject, {headers});
 
 export const saveTable = (tableObject: string): Promise<AxiosResponse<OperationResponse>> =>
   baseApi.post(`/tables`, JSON.stringify(tableObject), {headers});

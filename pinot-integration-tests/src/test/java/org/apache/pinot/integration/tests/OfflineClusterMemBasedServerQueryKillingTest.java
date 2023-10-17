@@ -202,7 +202,7 @@ public class OfflineClusterMemBasedServerQueryKillingTest extends BaseClusterInt
   }
 
   protected TableConfig createOfflineTableConfig() {
-    return new TableConfigBuilder(TableType.OFFLINE).setTableName(getTableName()).setSchemaName(getSchemaName())
+    return new TableConfigBuilder(TableType.OFFLINE).setTableName(getTableName())
         .setTimeColumnName(getTimeColumnName()).setFieldConfigList(getFieldConfigs()).setNumReplicas(getNumReplicas())
         .setSegmentVersion(getSegmentVersion()).setLoadMode(getLoadMode()).setTaskConfig(getTaskConfig())
         .setBrokerTenant(getBrokerTenant()).setServerTenant(getServerTenant()).setIngestionConfig(getIngestionConfig())
@@ -211,9 +211,11 @@ public class OfflineClusterMemBasedServerQueryKillingTest extends BaseClusterInt
         .build();
   }
 
-  @Test
-  public void testDigestOOM()
+  @Test(dataProvider = "useBothQueryEngines")
+  public void testDigestOOM(boolean useMultiStageQueryEngine)
       throws Exception {
+    setUseMultiStageQueryEngine(useMultiStageQueryEngine);
+    notSupportedInV2();
     JsonNode queryResponse = postQuery(OOM_QUERY);
     Assert.assertTrue(queryResponse.get("exceptions").toString().contains("\"errorCode\":"
         + QueryException.QUERY_CANCELLATION_ERROR_CODE));
@@ -221,17 +223,21 @@ public class OfflineClusterMemBasedServerQueryKillingTest extends BaseClusterInt
     Assert.assertTrue(queryResponse.get("exceptions").toString().contains("got killed because"));
   }
 
-  @Test
-  public void testDigestOOM2()
+  @Test(dataProvider = "useBothQueryEngines")
+  public void testDigestOOM2(boolean useMultiStageQueryEngine)
       throws Exception {
+    setUseMultiStageQueryEngine(useMultiStageQueryEngine);
+    notSupportedInV2();
     JsonNode queryResponse = postQuery(OOM_QUERY_2);
     Assert.assertTrue(queryResponse.get("exceptions").toString().contains("QueryCancelledException"));
     Assert.assertTrue(queryResponse.get("exceptions").toString().contains("got killed because"));
   }
 
-  @Test
-  public void testDigestOOMMultipleQueries()
+  @Test(dataProvider = "useBothQueryEngines")
+  public void testDigestOOMMultipleQueries(boolean useMultiStageQueryEngine)
       throws Exception {
+    setUseMultiStageQueryEngine(useMultiStageQueryEngine);
+    notSupportedInV2();
     AtomicReference<JsonNode> queryResponse1 = new AtomicReference<>();
     AtomicReference<JsonNode> queryResponse2 = new AtomicReference<>();
     AtomicReference<JsonNode> queryResponse3 = new AtomicReference<>();

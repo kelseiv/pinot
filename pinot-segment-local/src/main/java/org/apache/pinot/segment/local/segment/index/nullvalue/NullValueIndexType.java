@@ -21,6 +21,8 @@ package org.apache.pinot.segment.local.segment.index.nullvalue;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.pinot.segment.local.segment.creator.impl.nullvalue.NullValueVectorCreator;
@@ -45,6 +47,8 @@ import org.apache.pinot.spi.data.Schema;
 
 public class NullValueIndexType extends AbstractIndexType<IndexConfig, NullValueVectorReader, NullValueVectorCreator> {
   public static final String INDEX_DISPLAY_NAME = "null";
+  private static final List<String> EXTENSIONS =
+      Collections.singletonList(V1Constants.Indexes.NULLVALUE_VECTOR_FILE_EXTENSION);
 
   protected NullValueIndexType() {
     super(StandardIndexes.NULL_VALUE_VECTOR_ID);
@@ -73,14 +77,11 @@ public class NullValueIndexType extends AbstractIndexType<IndexConfig, NullValue
 
   @Override
   public ColumnConfigDeserializer<IndexConfig> createDeserializer() {
-    return IndexConfigDeserializer.fromIndexes(getPrettyName(), getIndexConfigClass())
-        .withFallbackAlternative(
-            IndexConfigDeserializer.ifIndexingConfig(
-                IndexConfigDeserializer.alwaysCall((TableConfig tableConfig, Schema schema) ->
-                  tableConfig.getIndexingConfig().isNullHandlingEnabled()
-                      ? IndexConfig.ENABLED
-                      : IndexConfig.DISABLED))
-        );
+    return IndexConfigDeserializer.ifIndexingConfig(
+        IndexConfigDeserializer.alwaysCall((TableConfig tableConfig, Schema schema) ->
+            tableConfig.getIndexingConfig().isNullHandlingEnabled()
+                ? IndexConfig.ENABLED
+                : IndexConfig.DISABLED));
   }
 
   public NullValueVectorCreator createIndexCreator(File indexDir, String columnName) {
@@ -99,8 +100,8 @@ public class NullValueIndexType extends AbstractIndexType<IndexConfig, NullValue
   }
 
   @Override
-  public String getFileExtension(ColumnMetadata columnMetadata) {
-    return V1Constants.Indexes.NULLVALUE_VECTOR_FILE_EXTENSION;
+  public List<String> getFileExtensions(@Nullable ColumnMetadata columnMetadata) {
+    return EXTENSIONS;
   }
 
   private static class ReaderFactory implements IndexReaderFactory<NullValueVectorReader> {
@@ -125,5 +126,9 @@ public class NullValueIndexType extends AbstractIndexType<IndexConfig, NullValue
 
   @Override
   public void convertToNewFormat(TableConfig tableConfig, Schema schema) {
+  }
+
+  public BuildLifecycle getIndexBuildLifecycle() {
+    return BuildLifecycle.CUSTOM;
   }
 }

@@ -20,11 +20,12 @@ package org.apache.pinot.segment.local.realtime.impl.invertedindex;
 
 import java.io.File;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Future;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.queryparser.classic.QueryParser;
-import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SearcherManager;
@@ -45,6 +46,8 @@ import org.slf4j.LoggerFactory;
  */
 public class RealtimeLuceneTextIndex implements MutableTextIndex {
   private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(RealtimeLuceneTextIndex.class);
+  private static final RealtimeLuceneTextIndexSearcherPool SEARCHER_POOL =
+      RealtimeLuceneTextIndexSearcherPool.getInstance();
   private final LuceneTextIndexCreator _indexCreator;
   private SearcherManager _searcherManager;
   private final StandardAnalyzer _analyzer = new StandardAnalyzer();
@@ -61,7 +64,7 @@ public class RealtimeLuceneTextIndex implements MutableTextIndex {
    * @param stopWordsExclude stop words to exclude from default stop words
    */
   public RealtimeLuceneTextIndex(String column, File segmentIndexDir, String segmentName,
-      List<String> stopWordsInclude, List<String> stopWordsExclude) {
+      List<String> stopWordsInclude, List<String> stopWordsExclude, boolean useCompoundFile, int maxBufferSizeMB) {
     _column = column;
     _segmentName = segmentName;
     try {
@@ -75,7 +78,7 @@ public class RealtimeLuceneTextIndex implements MutableTextIndex {
       // for realtime
       _indexCreator =
           new LuceneTextIndexCreator(column, new File(segmentIndexDir.getAbsolutePath() + "/" + segmentName),
-              false /* commitOnClose */, stopWordsInclude, stopWordsExclude);
+              false /* commitOnClose */, stopWordsInclude, stopWordsExclude, useCompoundFile, maxBufferSizeMB);
       IndexWriter indexWriter = _indexCreator.getIndexWriter();
       _searcherManager = new SearcherManager(indexWriter, false, false, null);
     } catch (Exception e) {
@@ -109,27 +112,43 @@ public class RealtimeLuceneTextIndex implements MutableTextIndex {
   @Override
   public MutableRoaringBitmap getDocIds(String searchQuery) {
     MutableRoaringBitmap docIDs = new MutableRoaringBitmap();
-    Collector docIDCollector = new RealtimeLuceneDocIdCollector(docIDs);
-    IndexSearcher indexSearcher = null;
-    try {
-      Query query = new QueryParser(_column, _analyzer).parse(searchQuery);
-      indexSearcher = _searcherManager.acquire();
-      indexSearcher.search(query, docIDCollector);
-      return getPinotDocIds(indexSearcher, docIDs);
-    } catch (Exception e) {
-      LOGGER
-          .error("Failed while searching the realtime text index for column {}, search query {}, exception {}", _column,
-              searchQuery, e.getMessage());
-      throw new RuntimeException(e);
-    } finally {
+    RealtimeLuceneDocIdCollector docIDCollector = new RealtimeLuceneDocIdCollector(docIDs);
+    // A thread interrupt during indexSearcher.search() can break the underlying FSDirectory used by the IndexWriter
+    // which the SearcherManager is created with. To ensure the index is never corrupted the search is executed
+    // in a child thread and the interrupt is handled in the current thread by canceling the search gracefully.
+    // See https://github.com/apache/lucene/issues/3315 and https://github.com/apache/lucene/issues/9309
+    Callable<MutableRoaringBitmap> searchCallable = () -> {
+      IndexSearcher indexSearcher = null;
       try {
-        if (indexSearcher != null) {
-          _searcherManager.release(indexSearcher);
+        Query query = new QueryParser(_column, _analyzer).parse(searchQuery);
+        indexSearcher = _searcherManager.acquire();
+        indexSearcher.search(query, docIDCollector);
+        return getPinotDocIds(indexSearcher, docIDs);
+      } finally {
+        try {
+          if (indexSearcher != null) {
+            _searcherManager.release(indexSearcher);
+          }
+        } catch (Exception e) {
+          LOGGER.error(
+              "Failed while releasing the searcher manager for realtime text index for column {}, exception {}",
+              _column, e.getMessage());
         }
-      } catch (Exception e) {
-        LOGGER.error("Failed while releasing the searcher manager for realtime text index for column {}, exception {}",
-            _column, e.getMessage());
       }
+    };
+    Future<MutableRoaringBitmap> searchFuture =
+        SEARCHER_POOL.getExecutorService().submit(searchCallable);
+    try {
+      return searchFuture.get();
+    } catch (InterruptedException e) {
+      docIDCollector.markShouldCancel();
+      LOGGER.warn("TEXT_MATCH query timeout on realtime consuming segment {}, column {}, search query {}", _segmentName,
+          _column, searchQuery);
+      throw new RuntimeException("TEXT_MATCH query timeout on realtime consuming segment");
+    } catch (Exception e) {
+      LOGGER.error("Failed while searching the realtime text index for segment {}, column {}, search query {},"
+              + " exception {}", _segmentName, _column, searchQuery, e.getMessage());
+      throw new RuntimeException(e);
     }
   }
 

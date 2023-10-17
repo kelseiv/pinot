@@ -167,7 +167,7 @@ public final class IngestionUtils {
 
       case BatchConfigProperties.SegmentNameGeneratorType.SIMPLE:
         return new SimpleSegmentNameGenerator(rawTableName, batchConfig.getSegmentNamePostfix(),
-            batchConfig.isAppendUUIDToSegmentName());
+            batchConfig.isAppendUUIDToSegmentName(), batchConfig.isExcludeTimeInSegmentName());
       default:
         throw new IllegalStateException(String
             .format("Unsupported segmentNameGeneratorType: %s for table: %s", segmentNameGeneratorType,
@@ -308,6 +308,13 @@ public final class IngestionUtils {
    */
   public static Set<String> getFieldsForRecordExtractor(@Nullable IngestionConfig ingestionConfig, Schema schema) {
     Set<String> fieldsForRecordExtractor = new HashSet<>();
+
+    if (null != ingestionConfig && null != ingestionConfig.getSchemaConformingTransformerConfig()) {
+      // The SchemaConformingTransformer requires that all fields are extracted, indicated by returning an empty set
+      // here. Compared to extracting the fields specified below, extracting all fields should be a superset.
+      return fieldsForRecordExtractor;
+    }
+
     extractFieldsFromIngestionConfig(ingestionConfig, fieldsForRecordExtractor);
     extractFieldsFromSchema(schema, fieldsForRecordExtractor);
     fieldsForRecordExtractor = getFieldsToReadWithComplexType(fieldsForRecordExtractor, ingestionConfig);

@@ -219,6 +219,11 @@ public class ForwardIndexHandler extends BaseIndexHandler {
     }
 
     for (String column : existingAllColumns) {
+      if (_schema != null && !_schema.hasColumn(column)) {
+        // _schema will be null only in tests
+        LOGGER.info("Column {} is not in schema, skipping updating forward index", column);
+        continue;
+      }
       FieldIndexConfigs newConf = _fieldIndexConfigs.get(column);
       boolean newIsFwd = newConf.getConfig(StandardIndexes.forward()).isEnabled();
       boolean newIsDict = newConf.getConfig(StandardIndexes.dictionary()).isEnabled();
@@ -326,6 +331,7 @@ public class ForwardIndexHandler extends BaseIndexHandler {
         }
       } else if (existingNoDictColumns.contains(column) && !newIsDict) {
         // Both existing and new column is RAW forward index encoded. Check if compression needs to be changed.
+        // TODO: Also check if raw index version needs to be changed
         if (shouldChangeCompressionType(column, segmentReader)) {
           columnOperationsMap.put(column, Collections.singletonList(Operation.CHANGE_RAW_INDEX_COMPRESSION_TYPE));
         }

@@ -39,13 +39,11 @@ import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.common.utils.request.RequestUtils;
 import org.apache.pinot.core.query.optimizer.QueryOptimizer;
 import org.apache.pinot.core.routing.TimeBoundaryInfo;
-import org.apache.pinot.query.planner.partitioning.FieldSelectionKeySelector;
 import org.apache.pinot.query.planner.plannode.JoinNode;
 import org.apache.pinot.query.routing.WorkerMetadata;
 import org.apache.pinot.query.runtime.plan.DistributedStagePlan;
-import org.apache.pinot.query.runtime.plan.PhysicalPlanContext;
+import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
 import org.apache.pinot.query.runtime.plan.StageMetadata;
-import org.apache.pinot.query.service.QueryConfig;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.data.FieldSpec;
@@ -62,6 +60,9 @@ import org.slf4j.LoggerFactory;
 
 
 public class ServerPlanRequestUtils {
+  private ServerPlanRequestUtils() {
+  }
+
   private static final int DEFAULT_LEAF_NODE_LIMIT = Integer.MAX_VALUE;
   private static final Logger LOGGER = LoggerFactory.getLogger(ServerPlanRequestUtils.class);
   private static final List<String> QUERY_REWRITERS_CLASS_NAMES =
@@ -71,22 +72,16 @@ public class ServerPlanRequestUtils {
       new ArrayList<>(QueryRewriterFactory.getQueryRewriters(QUERY_REWRITERS_CLASS_NAMES));
   private static final QueryOptimizer QUERY_OPTIMIZER = new QueryOptimizer();
 
-  private ServerPlanRequestUtils() {
-    // do not instantiate.
-  }
-
   /**
    * Entry point to construct a {@link ServerPlanRequestContext} for executing leaf-stage runner.
    *
-   * @param planContext physical plan context of the stage.
+   * @param executionContext execution context of the stage.
    * @param distributedStagePlan distributed stage plan of the stage.
-   * @param requestMetadataMap metadata map
    * @param helixPropertyStore helix property store used to fetch table config and schema for leaf-stage execution.
    * @return a list of server plan request context to be run
    */
-  public static List<ServerPlanRequestContext> constructServerQueryRequests(PhysicalPlanContext planContext,
-      DistributedStagePlan distributedStagePlan, Map<String, String> requestMetadataMap,
-      ZkHelixPropertyStore<ZNRecord> helixPropertyStore) {
+  public static List<ServerPlanRequestContext> constructServerQueryRequests(OpChainExecutionContext executionContext,
+      DistributedStagePlan distributedStagePlan, ZkHelixPropertyStore<ZNRecord> helixPropertyStore) {
     StageMetadata stageMetadata = distributedStagePlan.getStageMetadata();
     WorkerMetadata workerMetadata = distributedStagePlan.getCurrentWorkerMetadata();
     String rawTableName = StageMetadata.getTableName(stageMetadata);
@@ -102,15 +97,15 @@ public class ServerPlanRequestUtils {
             TableNameBuilder.forType(TableType.OFFLINE).tableNameWithType(rawTableName));
         Schema schema = ZKMetadataProvider.getTableSchema(helixPropertyStore,
             TableNameBuilder.forType(TableType.OFFLINE).tableNameWithType(rawTableName));
-        requests.add(ServerPlanRequestUtils.build(planContext, distributedStagePlan, requestMetadataMap, tableConfig,
-            schema, StageMetadata.getTimeBoundary(stageMetadata), TableType.OFFLINE, tableEntry.getValue()));
+        requests.add(ServerPlanRequestUtils.build(executionContext, distributedStagePlan, tableConfig, schema,
+            StageMetadata.getTimeBoundary(stageMetadata), TableType.OFFLINE, tableEntry.getValue()));
       } else if (TableType.REALTIME.name().equals(tableType)) {
         TableConfig tableConfig = ZKMetadataProvider.getTableConfig(helixPropertyStore,
             TableNameBuilder.forType(TableType.REALTIME).tableNameWithType(rawTableName));
         Schema schema = ZKMetadataProvider.getTableSchema(helixPropertyStore,
             TableNameBuilder.forType(TableType.REALTIME).tableNameWithType(rawTableName));
-        requests.add(ServerPlanRequestUtils.build(planContext, distributedStagePlan, requestMetadataMap, tableConfig,
-            schema, StageMetadata.getTimeBoundary(stageMetadata), TableType.REALTIME, tableEntry.getValue()));
+        requests.add(ServerPlanRequestUtils.build(executionContext, distributedStagePlan, tableConfig, schema,
+            StageMetadata.getTimeBoundary(stageMetadata), TableType.REALTIME, tableEntry.getValue()));
       } else {
         throw new IllegalArgumentException("Unsupported table type key: " + tableType);
       }
@@ -118,17 +113,15 @@ public class ServerPlanRequestUtils {
     return requests;
   }
 
-  private static ServerPlanRequestContext build(PhysicalPlanContext planContext, DistributedStagePlan stagePlan,
-      Map<String, String> requestMetadataMap, TableConfig tableConfig, Schema schema, TimeBoundaryInfo timeBoundaryInfo,
+  private static ServerPlanRequestContext build(OpChainExecutionContext executionContext,
+      DistributedStagePlan stagePlan, TableConfig tableConfig, Schema schema, TimeBoundaryInfo timeBoundaryInfo,
       TableType tableType, List<String> segmentList) {
     // Before-visit: construct the ServerPlanRequestContext baseline
     // Making a unique requestId for leaf stages otherwise it causes problem on stats/metrics/tracing.
-    long requestId = (Long.parseLong(requestMetadataMap.get(QueryConfig.KEY_OF_BROKER_REQUEST_ID)) << 16) + (
-        (long) stagePlan.getStageId() << 8) + (tableType == TableType.REALTIME ? 1 : 0);
-    long timeoutMs = Long.parseLong(requestMetadataMap.get(QueryConfig.KEY_OF_BROKER_REQUEST_TIMEOUT_MS));
-    boolean traceEnabled = Boolean.parseBoolean(requestMetadataMap.get(CommonConstants.Broker.Request.TRACE));
+    long requestId = (executionContext.getRequestId() << 16) + ((long) stagePlan.getStageId() << 8) + (
+        tableType == TableType.REALTIME ? 1 : 0);
     PinotQuery pinotQuery = new PinotQuery();
-    Integer leafNodeLimit = QueryOptionsUtils.getMultiStageLeafLimit(requestMetadataMap);
+    Integer leafNodeLimit = QueryOptionsUtils.getMultiStageLeafLimit(executionContext.getOpChainMetadata());
     if (leafNodeLimit != null) {
       pinotQuery.setLimit(leafNodeLimit);
     } else {
@@ -136,7 +129,7 @@ public class ServerPlanRequestUtils {
     }
     LOGGER.debug("QueryID" + requestId + " leafNodeLimit:" + leafNodeLimit);
     pinotQuery.setExplain(false);
-    ServerPlanRequestContext serverContext = new ServerPlanRequestContext(planContext, pinotQuery, tableType);
+    ServerPlanRequestContext serverContext = new ServerPlanRequestContext(executionContext, pinotQuery, tableType);
 
     // visit the plan and create query physical plan.
     ServerPlanRequestVisitor.walkStageNode(stagePlan.getStageRoot(), serverContext);
@@ -152,7 +145,7 @@ public class ServerPlanRequestUtils {
     QUERY_OPTIMIZER.optimize(pinotQuery, tableConfig, schema);
 
     // 2. set pinot query options according to requestMetadataMap
-    updateQueryOptions(pinotQuery, requestMetadataMap, timeoutMs, traceEnabled);
+    updateQueryOptions(pinotQuery, executionContext);
 
     // 3. wrapped around in broker request
     BrokerRequest brokerRequest = new BrokerRequest();
@@ -168,7 +161,7 @@ public class ServerPlanRequestUtils {
     InstanceRequest instanceRequest = new InstanceRequest();
     instanceRequest.setRequestId(requestId);
     instanceRequest.setBrokerId("unknown");
-    instanceRequest.setEnableTrace(Boolean.parseBoolean(requestMetadataMap.get(CommonConstants.Broker.Request.TRACE)));
+    instanceRequest.setEnableTrace(executionContext.isTraceEnabled());
     instanceRequest.setSearchSegments(segmentList);
     instanceRequest.setQuery(brokerRequest);
 
@@ -179,16 +172,10 @@ public class ServerPlanRequestUtils {
   /**
    * Helper method to update query options.
    */
-  private static void updateQueryOptions(PinotQuery pinotQuery, Map<String, String> requestMetadataMap, long timeoutMs,
-      boolean traceEnabled) {
-    Map<String, String> queryOptions = new HashMap<>();
-    // put default timeout and trace options
-    queryOptions.put(CommonConstants.Broker.Request.QueryOptionKey.TIMEOUT_MS, String.valueOf(timeoutMs));
-    if (traceEnabled) {
-      queryOptions.put(CommonConstants.Broker.Request.TRACE, "true");
-    }
-    // overwrite with requestMetadataMap to carry query options from request:
-    queryOptions.putAll(requestMetadataMap);
+  private static void updateQueryOptions(PinotQuery pinotQuery, OpChainExecutionContext executionContext) {
+    Map<String, String> queryOptions = new HashMap<>(executionContext.getOpChainMetadata());
+    queryOptions.put(CommonConstants.Broker.Request.QueryOptionKey.TIMEOUT_MS,
+        Long.toString(executionContext.getDeadlineMs() - System.currentTimeMillis()));
     pinotQuery.setQueryOptions(queryOptions);
   }
 
@@ -219,12 +206,12 @@ public class ServerPlanRequestUtils {
    */
   static void attachDynamicFilter(PinotQuery pinotQuery, JoinNode.JoinKeys joinKeys, List<Object[]> dataContainer,
       DataSchema dataSchema) {
-    FieldSelectionKeySelector leftSelector = (FieldSelectionKeySelector) joinKeys.getLeftJoinKeySelector();
-    FieldSelectionKeySelector rightSelector = (FieldSelectionKeySelector) joinKeys.getRightJoinKeySelector();
+    List<Integer> leftJoinKeys = joinKeys.getLeftKeys();
+    List<Integer> rightJoinKeys = joinKeys.getRightKeys();
     List<Expression> expressions = new ArrayList<>();
-    for (int i = 0; i < leftSelector.getColumnIndices().size(); i++) {
-      Expression leftExpr = pinotQuery.getSelectList().get(leftSelector.getColumnIndices().get(i));
-      int rightIdx = rightSelector.getColumnIndices().get(i);
+    for (int i = 0; i < leftJoinKeys.size(); i++) {
+      Expression leftExpr = pinotQuery.getSelectList().get(leftJoinKeys.get(i));
+      int rightIdx = rightJoinKeys.get(i);
       Expression inFilterExpr = RequestUtils.getFunctionExpression(FilterKind.IN.name());
       List<Expression> operands = new ArrayList<>(dataContainer.size() + 1);
       operands.add(leftExpr);
@@ -268,7 +255,11 @@ public class ServerPlanRequestUtils {
         }
         Arrays.sort(arrFloat);
         for (int rowIdx = 0; rowIdx < numRows; rowIdx++) {
-          expressions.add(RequestUtils.getLiteralExpression(arrFloat[rowIdx]));
+          // TODO: Create float literal when it is supported
+          // NOTE: We cannot directly cast float to double here because we want to preserve the exact value. E.g. 0.05f
+          //       will be casted to 0.05000000074505806. Predicate evaluation uses string format to match the values,
+          //       so here we need to create the double value based on the string format of the float value.
+          expressions.add(RequestUtils.getLiteralExpression(Double.parseDouble(Float.toString(arrFloat[rowIdx]))));
         }
         break;
       case DOUBLE:

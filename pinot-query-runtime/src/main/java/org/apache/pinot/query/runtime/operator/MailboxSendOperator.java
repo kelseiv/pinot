@@ -20,11 +20,10 @@ package org.apache.pinot.query.runtime.operator;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableSet;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.TimeoutException;
 import javax.annotation.Nullable;
 import org.apache.calcite.rel.RelDistribution;
@@ -33,13 +32,13 @@ import org.apache.pinot.query.mailbox.MailboxIdUtils;
 import org.apache.pinot.query.mailbox.MailboxService;
 import org.apache.pinot.query.mailbox.SendingMailbox;
 import org.apache.pinot.query.planner.logical.RexExpression;
-import org.apache.pinot.query.planner.partitioning.KeySelector;
 import org.apache.pinot.query.routing.MailboxMetadata;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlockUtils;
 import org.apache.pinot.query.runtime.operator.exchange.BlockExchange;
 import org.apache.pinot.query.runtime.operator.utils.OperatorUtils;
 import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
+import org.apache.pinot.spi.exception.QueryCancelledException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,8 +49,8 @@ import org.slf4j.LoggerFactory;
  * TODO: Add support to sort the data prior to sending if sorting is enabled
  */
 public class MailboxSendOperator extends MultiStageOperator {
-  public static final Set<RelDistribution.Type> SUPPORTED_EXCHANGE_TYPES =
-      ImmutableSet.of(RelDistribution.Type.SINGLETON, RelDistribution.Type.RANDOM_DISTRIBUTED,
+  public static final EnumSet<RelDistribution.Type> SUPPORTED_EXCHANGE_TYPES =
+      EnumSet.of(RelDistribution.Type.SINGLETON, RelDistribution.Type.RANDOM_DISTRIBUTED,
           RelDistribution.Type.BROADCAST_DISTRIBUTED, RelDistribution.Type.HASH_DISTRIBUTED);
 
   private static final Logger LOGGER = LoggerFactory.getLogger(MailboxSendOperator.class);
@@ -64,11 +63,11 @@ public class MailboxSendOperator extends MultiStageOperator {
   private final boolean _isSortOnSender;
 
   public MailboxSendOperator(OpChainExecutionContext context, MultiStageOperator sourceOperator,
-      RelDistribution.Type exchangeType, KeySelector<Object[], Object[]> keySelector,
+      RelDistribution.Type distributionType, @Nullable List<Integer> distributionKeys,
       @Nullable List<RexExpression> collationKeys, @Nullable List<RelFieldCollation.Direction> collationDirections,
       boolean isSortOnSender, int receiverStageId) {
-    this(context, sourceOperator, getBlockExchange(context, exchangeType, keySelector, receiverStageId), collationKeys,
-        collationDirections, isSortOnSender);
+    this(context, sourceOperator, getBlockExchange(context, distributionType, distributionKeys, receiverStageId),
+        collationKeys, collationDirections, isSortOnSender);
   }
 
   @VisibleForTesting
@@ -81,28 +80,27 @@ public class MailboxSendOperator extends MultiStageOperator {
     _collationKeys = collationKeys;
     _collationDirections = collationDirections;
     _isSortOnSender = isSortOnSender;
-    _context.getMailboxService().submitExchangeRequest(context.getId(), exchange);
   }
 
-  private static BlockExchange getBlockExchange(OpChainExecutionContext context, RelDistribution.Type exchangeType,
-      KeySelector<Object[], Object[]> keySelector, int receiverStageId) {
-    Preconditions.checkState(SUPPORTED_EXCHANGE_TYPES.contains(exchangeType), "Unsupported exchange type: %s",
-        exchangeType);
+  private static BlockExchange getBlockExchange(OpChainExecutionContext context, RelDistribution.Type distributionType,
+      @Nullable List<Integer> distributionKeys, int receiverStageId) {
+    Preconditions.checkState(SUPPORTED_EXCHANGE_TYPES.contains(distributionType), "Unsupported distribution type: %s",
+        distributionType);
     MailboxService mailboxService = context.getMailboxService();
     long requestId = context.getRequestId();
     long deadlineMs = context.getDeadlineMs();
 
     int workerId = context.getServer().workerId();
-    MailboxMetadata receiverMailboxMetadatas =
+    MailboxMetadata mailboxMetadata =
         context.getStageMetadata().getWorkerMetadataList().get(workerId).getMailBoxInfosMap().get(receiverStageId);
-    List<String> sendingMailboxIds = MailboxIdUtils.toMailboxIds(requestId, receiverMailboxMetadatas);
+    List<String> sendingMailboxIds = MailboxIdUtils.toMailboxIds(requestId, mailboxMetadata);
     List<SendingMailbox> sendingMailboxes = new ArrayList<>(sendingMailboxIds.size());
-    for (int i = 0; i < receiverMailboxMetadatas.getMailBoxIdList().size(); i++) {
-      sendingMailboxes.add(mailboxService.getSendingMailbox(receiverMailboxMetadatas.getVirtualAddress(i).hostname(),
-          receiverMailboxMetadatas.getVirtualAddress(i).port(), sendingMailboxIds.get(i), deadlineMs));
+    for (int i = 0; i < sendingMailboxIds.size(); i++) {
+      sendingMailboxes.add(mailboxService.getSendingMailbox(mailboxMetadata.getVirtualAddress(i).hostname(),
+          mailboxMetadata.getVirtualAddress(i).port(), sendingMailboxIds.get(i), deadlineMs));
     }
-    return BlockExchange.getExchange(context.getId(), sendingMailboxes, exchangeType, keySelector,
-        TransferableBlockUtils::splitBlock, context.getCallback(), context.getDeadlineMs());
+    return BlockExchange.getExchange(sendingMailboxes, distributionType, distributionKeys,
+        TransferableBlockUtils::splitBlock);
   }
 
   @Override
@@ -118,47 +116,46 @@ public class MailboxSendOperator extends MultiStageOperator {
 
   @Override
   protected TransferableBlock getNextBlock() {
-    boolean canContinue = true;
-    TransferableBlock transferableBlock;
     try {
-      transferableBlock = _sourceOperator.nextBlock();
-      if (transferableBlock.isNoOpBlock()) {
-        return transferableBlock;
-      } else if (transferableBlock.isEndOfStreamBlock()) {
-        if (transferableBlock.isSuccessfulEndOfStreamBlock()) {
-          // Stats need to be populated here because the block is being sent to the mailbox
-          // and the receiving opChain will not be able to access the stats from the previous opChain
-          TransferableBlock eosBlockWithStats = TransferableBlockUtils.getEndOfStreamTransferableBlock(
-              OperatorUtils.getMetadataFromOperatorStats(_opChainStats.getOperatorStatsMap()));
-          sendTransferableBlock(eosBlockWithStats);
-        } else {
-          sendTransferableBlock(transferableBlock);
+      TransferableBlock block = _sourceOperator.nextBlock();
+      if (block.isSuccessfulEndOfStreamBlock()) {
+        // Stats need to be populated here because the block is being sent to the mailbox
+        // and the receiving opChain will not be able to access the stats from the previous opChain
+        TransferableBlock eosBlockWithStats = TransferableBlockUtils.getEndOfStreamTransferableBlock(
+            OperatorUtils.getMetadataFromOperatorStats(_opChainStats.getOperatorStatsMap()));
+        // no need to check early terminate signal b/c the current block is already EOS
+        sendTransferableBlock(eosBlockWithStats);
+      } else {
+        if (sendTransferableBlock(block)) {
+          earlyTerminate();
         }
-      } else { // normal blocks
-        // check whether we should continue depending on exchange queue condition.
-        canContinue = sendTransferableBlock(transferableBlock);
       }
+      return block;
+    } catch (QueryCancelledException e) {
+      LOGGER.debug("Query was cancelled! for opChain: {}", _context.getId());
+      return TransferableBlockUtils.getEndOfStreamTransferableBlock();
+    } catch (TimeoutException e) {
+      LOGGER.warn("Timed out transferring data on opChain: {}", _context.getId(), e);
+      return TransferableBlockUtils.getErrorTransferableBlock(e);
     } catch (Exception e) {
-      transferableBlock = TransferableBlockUtils.getErrorTransferableBlock(e);
+      TransferableBlock errorBlock = TransferableBlockUtils.getErrorTransferableBlock(e);
       try {
-        LOGGER.error("Exception while transferring data on opChain: " + _context.getId(), e);
-        sendTransferableBlock(transferableBlock);
+        LOGGER.error("Exception while transferring data on opChain: {}", _context.getId(), e);
+        sendTransferableBlock(errorBlock);
       } catch (Exception e2) {
         LOGGER.error("Exception while sending error block.", e2);
       }
+      return errorBlock;
     }
-    // yield if we cannot continue to put transferable block into the sending queue
-    return canContinue ? transferableBlock : TransferableBlockUtils.getNoOpTransferableBlock();
   }
 
   private boolean sendTransferableBlock(TransferableBlock block)
       throws Exception {
-    long timeoutMs = _context.getDeadlineMs() - System.currentTimeMillis();
-    if (_exchange.offerBlock(block, timeoutMs)) {
-      return _exchange.getRemainingCapacity() > 0;
-    } else {
-      throw new TimeoutException("Timeout while offering data block into the sending queue.");
+    boolean isEarlyTerminated = _exchange.send(block);
+    if (LOGGER.isDebugEnabled()) {
+      LOGGER.debug("==[SEND]== Block " + block + " sent from: " + _context.getId());
     }
+    return isEarlyTerminated;
   }
 
   /**

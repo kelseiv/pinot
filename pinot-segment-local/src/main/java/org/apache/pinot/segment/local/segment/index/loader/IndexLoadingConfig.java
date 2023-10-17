@@ -99,11 +99,10 @@ public class IndexLoadingConfig {
   private SegmentVersion _segmentVersion;
   private ColumnMinMaxValueGeneratorMode _columnMinMaxValueGeneratorMode = ColumnMinMaxValueGeneratorMode.DEFAULT_MODE;
   private int _realtimeAvgMultiValueCount = DEFAULT_REALTIME_AVG_MULTI_VALUE_COUNT;
-  private boolean _enableSplitCommit;
   private boolean _isRealtimeOffHeapAllocation;
   private boolean _isDirectRealtimeOffHeapAllocation;
-  private boolean _enableSplitCommitEndWithMetadata;
   private String _segmentStoreURI;
+  private boolean _errorOnColumnBuildFailure;
 
   // constructed from FieldConfig
   private Map<String, Map<String, String>> _columnProperties = new HashMap<>();
@@ -417,8 +416,6 @@ public class IndexLoadingConfig {
       _segmentVersion = SegmentVersion.valueOf(instanceSegmentVersion.toLowerCase());
     }
 
-    _enableSplitCommit = instanceDataManagerConfig.isEnableSplitCommit();
-
     _isRealtimeOffHeapAllocation = instanceDataManagerConfig.isRealtimeOffHeapAllocation();
     _isDirectRealtimeOffHeapAllocation = instanceDataManagerConfig.isDirectRealtimeOffHeapAllocation();
 
@@ -426,7 +423,6 @@ public class IndexLoadingConfig {
     if (avgMultiValueCount != null) {
       _realtimeAvgMultiValueCount = Integer.valueOf(avgMultiValueCount);
     }
-    _enableSplitCommitEndWithMetadata = instanceDataManagerConfig.isEnableSplitCommitEndWithMetadata();
     _segmentStoreURI =
         instanceDataManagerConfig.getConfig().getProperty(CommonConstants.Server.CONFIG_OF_SEGMENT_STORE_URI);
     _segmentDirectoryLoader = instanceDataManagerConfig.getSegmentDirectoryLoader();
@@ -511,7 +507,7 @@ public class IndexLoadingConfig {
   /**
    * Used in two places:
    * (1) In {@link PhysicalColumnIndexContainer} to create the index loading info for immutable segments
-   * (2) In LLRealtimeSegmentDataManager to create the RealtimeSegmentConfig.
+   * (2) In RealtimeSegmentDataManager to create the RealtimeSegmentConfig.
    * RealtimeSegmentConfig is used to specify the text index column info for newly
    * to-be-created Mutable Segments
    * @return a set containing names of text index columns
@@ -809,14 +805,6 @@ public class IndexLoadingConfig {
     _dirty = true;
   }
 
-  public boolean isEnableSplitCommit() {
-    return _enableSplitCommit;
-  }
-
-  public boolean isEnableSplitCommitEndWithMetadata() {
-    return _enableSplitCommitEndWithMetadata;
-  }
-
   public boolean isRealtimeOffHeapAllocation() {
     return _isRealtimeOffHeapAllocation;
   }
@@ -878,6 +866,14 @@ public class IndexLoadingConfig {
   public void setTableDataDir(String tableDataDir) {
     _tableDataDir = tableDataDir;
     _dirty = true;
+  }
+
+  public boolean isErrorOnColumnBuildFailure() {
+    return _errorOnColumnBuildFailure;
+  }
+
+  public void setErrorOnColumnBuildFailure(boolean errorOnColumnBuildFailure) {
+    _errorOnColumnBuildFailure = errorOnColumnBuildFailure;
   }
 
   public String getTableDataDir() {

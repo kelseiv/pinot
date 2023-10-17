@@ -36,7 +36,7 @@ public class ExtractTransformFunction extends BaseTransformFunction {
   protected Chronology _chronology = ISOChronology.getInstanceUTC();
 
   private enum Field {
-    YEAR, MONTH, DAY, HOUR, MINUTE, SECOND
+    YEAR, QUARTER, MONTH, DAY, DOY, DOW, HOUR, MINUTE, SECOND
   }
 
   @Override
@@ -46,6 +46,7 @@ public class ExtractTransformFunction extends BaseTransformFunction {
 
   @Override
   public void init(List<TransformFunction> arguments, Map<String, ColumnContext> columnContextMap) {
+    super.init(arguments, columnContextMap);
     if (arguments.size() != 2) {
       throw new IllegalArgumentException("Exactly 2 arguments are required for EXTRACT transform function");
     }
@@ -76,12 +77,24 @@ public class ExtractTransformFunction extends BaseTransformFunction {
           accessor = _chronology.year();
           output[i] = accessor.get(timestamps[i]);
           break;
+        case QUARTER:
+          accessor = _chronology.monthOfYear();
+          output[i] = (accessor.get(timestamps[i]) - 1) / 3 + 1;
+          break;
         case MONTH:
           accessor = _chronology.monthOfYear();
           output[i] = accessor.get(timestamps[i]);
           break;
         case DAY:
           accessor = _chronology.dayOfMonth();
+          output[i] = accessor.get(timestamps[i]);
+          break;
+        case DOY:
+          accessor = _chronology.dayOfYear();
+          output[i] = accessor.get(timestamps[i]);
+          break;
+        case DOW:
+          accessor = _chronology.dayOfWeek();
           output[i] = accessor.get(timestamps[i]);
           break;
         case HOUR:

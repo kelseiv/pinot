@@ -22,26 +22,31 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.hint.PinotHintOptions;
 import org.apache.pinot.common.datablock.DataBlock;
+import org.apache.pinot.common.exception.QueryException;
+import org.apache.pinot.common.response.ProcessingException;
 import org.apache.pinot.common.utils.DataSchema;
-import org.apache.pinot.core.data.table.Key;
+import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.query.planner.logical.RexExpression;
 import org.apache.pinot.query.planner.partitioning.KeySelector;
+import org.apache.pinot.query.planner.partitioning.KeySelectorFactory;
+import org.apache.pinot.query.planner.plannode.AbstractPlanNode;
 import org.apache.pinot.query.planner.plannode.JoinNode;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlockUtils;
 import org.apache.pinot.query.runtime.operator.operands.TransformOperand;
-import org.apache.pinot.query.runtime.operator.utils.TypeUtils;
+import org.apache.pinot.query.runtime.operator.operands.TransformOperandFactory;
 import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.pinot.spi.utils.BooleanUtils;
+import org.apache.pinot.spi.utils.CommonConstants.MultiStageQueryRunner.JoinOverFlowMode;
 
 
 /**
@@ -57,20 +62,22 @@ import org.slf4j.LoggerFactory;
  * The output is in the format of [left_row, right_row]
  */
 // TODO: Move inequi out of hashjoin. (https://github.com/apache/pinot/issues/9728)
+// TODO: Support memory size based resource limit.
 public class HashJoinOperator extends MultiStageOperator {
   private static final String EXPLAIN_NAME = "HASH_JOIN";
   private static final int INITIAL_HEURISTIC_SIZE = 16;
-  private static final Logger LOGGER = LoggerFactory.getLogger(AggregateOperator.class);
+  private static final int DEFAULT_MAX_ROWS_IN_JOIN = 1024 * 1024; // 2^20, around 1MM rows
+  private static final JoinOverFlowMode DEFAULT_JOIN_OVERFLOW_MODE = JoinOverFlowMode.THROW;
 
-  private static final Set<JoinRelType> SUPPORTED_JOIN_TYPES = ImmutableSet.of(
-      JoinRelType.INNER, JoinRelType.LEFT, JoinRelType.RIGHT, JoinRelType.FULL, JoinRelType.SEMI, JoinRelType.ANTI);
+  private static final Set<JoinRelType> SUPPORTED_JOIN_TYPES =
+      ImmutableSet.of(JoinRelType.INNER, JoinRelType.LEFT, JoinRelType.RIGHT, JoinRelType.FULL, JoinRelType.SEMI,
+          JoinRelType.ANTI);
 
-  private final HashMap<Key, ArrayList<Object[]>> _broadcastRightTable;
+  private final Map<Object, ArrayList<Object[]>> _broadcastRightTable;
 
   // Used to track matched right rows.
   // Only used for right join and full join to output non-matched right rows.
-  // TODO: Replace hashset with rolling bit map.
-  private final HashMap<Key, HashSet<Integer>> _matchedRightRows;
+  private final Map<Object, BitSet> _matchedRightRows;
 
   private final MultiStageOperator _leftTableOperator;
   private final MultiStageOperator _rightTableOperator;
@@ -86,8 +93,24 @@ public class HashJoinOperator extends MultiStageOperator {
   // TODO: Remove this special handling by fixing data block EOS abstraction or operator's invariant.
   private boolean _isTerminated;
   private TransferableBlock _upstreamErrorBlock;
-  private KeySelector<Object[], Object[]> _leftKeySelector;
-  private KeySelector<Object[], Object[]> _rightKeySelector;
+  private final KeySelector<?> _leftKeySelector;
+  private final KeySelector<?> _rightKeySelector;
+
+  // Below are specific parameters to protect the hash table from growing too large.
+  // Once the hash table reaches the limit, we will throw exception or break the right table build process.
+  /**
+   * Max rows allowed to build the right table hash collection.
+   */
+  private final int _maxRowsInHashTable;
+  /**
+   * Mode when join overflow happens, supported values: THROW or BREAK.
+   *   THROW(default): Break right table build process, and throw exception, no JOIN with left table performed.
+   *   BREAK: Break right table build process, continue to perform JOIN operation, results might be partial.
+   */
+  private final JoinOverFlowMode _joinOverflowMode;
+
+  private int _currentRowsInHashTable = 0;
+  private ProcessingException _resourceLimitExceededException = null;
 
   public HashJoinOperator(OpChainExecutionContext context, MultiStageOperator leftTableOperator,
       MultiStageOperator rightTableOperator, DataSchema leftSchema, JoinNode node) {
@@ -95,10 +118,9 @@ public class HashJoinOperator extends MultiStageOperator {
     Preconditions.checkState(SUPPORTED_JOIN_TYPES.contains(node.getJoinRelType()),
         "Join type: " + node.getJoinRelType() + " is not supported!");
     _joinType = node.getJoinRelType();
-    _leftKeySelector = node.getJoinKeys().getLeftJoinKeySelector();
-    _rightKeySelector = node.getJoinKeys().getRightJoinKeySelector();
-    Preconditions.checkState(_leftKeySelector != null, "LeftKeySelector for join cannot be null");
-    Preconditions.checkState(_rightKeySelector != null, "RightKeySelector for join cannot be null");
+    JoinNode.JoinKeys joinKeys = node.getJoinKeys();
+    _leftKeySelector = KeySelectorFactory.getKeySelector(joinKeys.getLeftKeys());
+    _rightKeySelector = KeySelectorFactory.getKeySelector(joinKeys.getRightKeys());
     _leftColumnSize = leftSchema.size();
     Preconditions.checkState(_leftColumnSize > 0, "leftColumnSize has to be greater than zero:" + _leftColumnSize);
     _resultSchema = node.getDataSchema();
@@ -110,7 +132,7 @@ public class HashJoinOperator extends MultiStageOperator {
     _rightTableOperator = rightTableOperator;
     _joinClauseEvaluators = new ArrayList<>(node.getJoinClauses().size());
     for (RexExpression joinClause : node.getJoinClauses()) {
-      _joinClauseEvaluators.add(TransformOperand.toTransformOperand(joinClause, _resultSchema));
+      _joinClauseEvaluators.add(TransformOperandFactory.getTransformOperand(joinClause, _resultSchema));
     }
     _isHashTableBuilt = false;
     _broadcastRightTable = new HashMap<>();
@@ -119,7 +141,38 @@ public class HashJoinOperator extends MultiStageOperator {
     } else {
       _matchedRightRows = null;
     }
-    _upstreamErrorBlock = null;
+    Map<String, String> metadata = context.getOpChainMetadata();
+    _maxRowsInHashTable = getMaxRowInJoin(metadata, node.getJoinHints());
+    _joinOverflowMode = getJoinOverflowMode(metadata, node.getJoinHints());
+  }
+
+  private int getMaxRowInJoin(Map<String, String> opChainMetadata, @Nullable AbstractPlanNode.NodeHint nodeHint) {
+    if (nodeHint != null) {
+      Map<String, String> joinOptions = nodeHint._hintOptions.get(PinotHintOptions.JOIN_HINT_OPTIONS);
+      if (joinOptions != null) {
+        String maxRowsInJoinStr = joinOptions.get(PinotHintOptions.JoinHintOptions.MAX_ROWS_IN_JOIN);
+        if (maxRowsInJoinStr != null) {
+          return Integer.parseInt(maxRowsInJoinStr);
+        }
+      }
+    }
+    Integer maxRowsInJoin = QueryOptionsUtils.getMaxRowsInJoin(opChainMetadata);
+    return maxRowsInJoin != null ? maxRowsInJoin : DEFAULT_MAX_ROWS_IN_JOIN;
+  }
+
+  private JoinOverFlowMode getJoinOverflowMode(Map<String, String> contextMetadata,
+      @Nullable AbstractPlanNode.NodeHint nodeHint) {
+    if (nodeHint != null) {
+      Map<String, String> joinOptions = nodeHint._hintOptions.get(PinotHintOptions.JOIN_HINT_OPTIONS);
+      if (joinOptions != null) {
+        String joinOverflowModeStr = joinOptions.get(PinotHintOptions.JoinHintOptions.JOIN_OVERFLOW_MODE);
+        if (joinOverflowModeStr != null) {
+          return JoinOverFlowMode.valueOf(joinOverflowModeStr);
+        }
+      }
+    }
+    JoinOverFlowMode joinOverflowMode = QueryOptionsUtils.getJoinOverflowMode(contextMetadata);
+    return joinOverflowMode != null ? joinOverflowMode : DEFAULT_JOIN_OVERFLOW_MODE;
   }
 
   // TODO: Separate left and right table operator.
@@ -138,7 +191,7 @@ public class HashJoinOperator extends MultiStageOperator {
   protected TransferableBlock getNextBlock() {
     try {
       if (_isTerminated) {
-        return TransferableBlockUtils.getEndOfStreamTransferableBlock();
+        return setPartialResultExceptionToBlock(TransferableBlockUtils.getEndOfStreamTransferableBlock());
       }
       if (!_isHashTableBuilt) {
         // Build JOIN hash table
@@ -146,72 +199,82 @@ public class HashJoinOperator extends MultiStageOperator {
       }
       if (_upstreamErrorBlock != null) {
         return _upstreamErrorBlock;
-      } else if (!_isHashTableBuilt) {
-        return TransferableBlockUtils.getNoOpTransferableBlock();
       }
       TransferableBlock leftBlock = _leftTableOperator.nextBlock();
       // JOIN each left block with the right block.
-      return buildJoinedDataBlock(leftBlock);
+      return setPartialResultExceptionToBlock(buildJoinedDataBlock(leftBlock));
     } catch (Exception e) {
       return TransferableBlockUtils.getErrorTransferableBlock(e);
     }
   }
 
-  private void buildBroadcastHashTable() {
+  private void buildBroadcastHashTable()
+      throws ProcessingException {
     TransferableBlock rightBlock = _rightTableOperator.nextBlock();
-    while (!rightBlock.isNoOpBlock()) {
-      if (rightBlock.isErrorBlock()) {
-        _upstreamErrorBlock = rightBlock;
-        return;
-      }
-      if (TransferableBlockUtils.isEndOfStream(rightBlock)) {
-        _isHashTableBuilt = true;
-        return;
-      }
+    while (!TransferableBlockUtils.isEndOfStream(rightBlock)) {
       List<Object[]> container = rightBlock.getContainer();
+      // Row based overflow check.
+      if (container.size() + _currentRowsInHashTable > _maxRowsInHashTable) {
+        _resourceLimitExceededException =
+            new ProcessingException(QueryException.SERVER_RESOURCE_LIMIT_EXCEEDED_ERROR_CODE);
+        _resourceLimitExceededException.setMessage(
+            "Cannot build in memory hash table for join operator, reach number of rows limit: " + _maxRowsInHashTable);
+        if (_joinOverflowMode == JoinOverFlowMode.THROW) {
+          throw _resourceLimitExceededException;
+        } else {
+          // Just fill up the buffer.
+          int remainingRows = _maxRowsInHashTable - _currentRowsInHashTable;
+          container = container.subList(0, remainingRows);
+        }
+      }
       // put all the rows into corresponding hash collections keyed by the key selector function.
       for (Object[] row : container) {
-        ArrayList<Object[]> hashCollection = _broadcastRightTable.computeIfAbsent(
-            new Key(_rightKeySelector.getKey(row)), k -> new ArrayList<>(INITIAL_HEURISTIC_SIZE));
+        ArrayList<Object[]> hashCollection = _broadcastRightTable.computeIfAbsent(_rightKeySelector.getKey(row),
+            k -> new ArrayList<>(INITIAL_HEURISTIC_SIZE));
         int size = hashCollection.size();
-        if ((size & size - 1) == 0 && size < Integer.MAX_VALUE / 2) { // is power of 2
-          hashCollection.ensureCapacity(size << 1);
+        if ((size & size - 1) == 0 && size < _maxRowsInHashTable && size < Integer.MAX_VALUE / 2) { // is power of 2
+          hashCollection.ensureCapacity(Math.min(size << 1, _maxRowsInHashTable));
         }
         hashCollection.add(row);
       }
+      _currentRowsInHashTable += container.size();
+      if (_currentRowsInHashTable == _maxRowsInHashTable) {
+        // setting only the rightTableOperator to be early terminated and awaits EOS block next.
+        _rightTableOperator.earlyTerminate();
+      }
       rightBlock = _rightTableOperator.nextBlock();
+    }
+    if (rightBlock.isErrorBlock()) {
+      _upstreamErrorBlock = rightBlock;
+    } else {
+      _isHashTableBuilt = true;
     }
   }
 
-  private TransferableBlock buildJoinedDataBlock(TransferableBlock leftBlock)
-      throws Exception {
+  private TransferableBlock buildJoinedDataBlock(TransferableBlock leftBlock) {
     if (leftBlock.isErrorBlock()) {
       _upstreamErrorBlock = leftBlock;
       return _upstreamErrorBlock;
     }
-    if (leftBlock.isNoOpBlock() || (leftBlock.isSuccessfulEndOfStreamBlock() && !needUnmatchedRightRows())) {
-      if (!leftBlock.getResultMetadata().isEmpty()) {
+    if (leftBlock.isSuccessfulEndOfStreamBlock()) {
+      if (!needUnmatchedRightRows()) {
+        return leftBlock;
       }
-
-      if (leftBlock.isSuccessfulEndOfStreamBlock()) {
-        return TransferableBlockUtils.getEndOfStreamTransferableBlock();
-      }
-
-      return leftBlock;
-    }
-    // TODO: Moved to a different function.
-    if (leftBlock.isSuccessfulEndOfStreamBlock() && needUnmatchedRightRows()) {
+      // TODO: Moved to a different function.
       // Return remaining non-matched rows for non-inner join.
       List<Object[]> returnRows = new ArrayList<>();
-      for (Map.Entry<Key, ArrayList<Object[]>> entry : _broadcastRightTable.entrySet()) {
-        Set<Integer> matchedIdx = _matchedRightRows.getOrDefault(entry.getKey(), new HashSet<>());
+      for (Map.Entry<Object, ArrayList<Object[]>> entry : _broadcastRightTable.entrySet()) {
         List<Object[]> rightRows = entry.getValue();
-        if (rightRows.size() == matchedIdx.size()) {
-          continue;
-        }
-        for (int i = 0; i < rightRows.size(); i++) {
-          if (!matchedIdx.contains(i)) {
-            returnRows.add(joinRow(null, rightRows.get(i)));
+        BitSet matchedIndices = _matchedRightRows.get(entry.getKey());
+        if (matchedIndices == null) {
+          for (Object[] rightRow : rightRows) {
+            returnRows.add(joinRow(null, rightRow));
+          }
+        } else {
+          int numRightRows = rightRows.size();
+          int unmatchedIndex = 0;
+          while ((unmatchedIndex = matchedIndices.nextClearBit(unmatchedIndex)) < numRightRows) {
+            returnRows.add(joinRow(null, rightRows.get(unmatchedIndex++)));
           }
         }
       }
@@ -219,25 +282,29 @@ public class HashJoinOperator extends MultiStageOperator {
       return new TransferableBlock(returnRows, _resultSchema, DataBlock.Type.ROW);
     }
     List<Object[]> rows;
-    if (leftBlock.isEndOfStreamBlock()) {
-      rows = new ArrayList<>();
-    } else {
-      switch (_joinType) {
-        case SEMI: {
-          rows = buildJoinedDataBlockSemi(leftBlock);
-          break;
-        }
-        case ANTI: {
-          rows = buildJoinedDataBlockAnti(leftBlock);
-          break;
-        }
-        default: { // INNER, LEFT, RIGHT, FULL
-          rows = buildJoinedDataBlockDefault(leftBlock);
-          break;
-        }
+    switch (_joinType) {
+      case SEMI: {
+        rows = buildJoinedDataBlockSemi(leftBlock);
+        break;
+      }
+      case ANTI: {
+        rows = buildJoinedDataBlockAnti(leftBlock);
+        break;
+      }
+      default: { // INNER, LEFT, RIGHT, FULL
+        rows = buildJoinedDataBlockDefault(leftBlock);
+        break;
       }
     }
+    // TODO: Rows can be empty here. Consider fetching another left block instead of returning empty block.
     return new TransferableBlock(rows, _resultSchema, DataBlock.Type.ROW);
+  }
+
+  private TransferableBlock setPartialResultExceptionToBlock(TransferableBlock block) {
+    if (_resourceLimitExceededException != null) {
+      block.addException(_resourceLimitExceededException);
+    }
+    return block;
   }
 
   private List<Object[]> buildJoinedDataBlockSemi(TransferableBlock leftBlock) {
@@ -245,7 +312,7 @@ public class HashJoinOperator extends MultiStageOperator {
     List<Object[]> rows = new ArrayList<>(container.size());
 
     for (Object[] leftRow : container) {
-      Key key = new Key(_leftKeySelector.getKey(leftRow));
+      Object key = _leftKeySelector.getKey(leftRow);
       // SEMI-JOIN only checks existence of the key
       if (_broadcastRightTable.containsKey(key)) {
         rows.add(joinRow(leftRow, null));
@@ -260,29 +327,28 @@ public class HashJoinOperator extends MultiStageOperator {
     ArrayList<Object[]> rows = new ArrayList<>(container.size());
 
     for (Object[] leftRow : container) {
-      Key key = new Key(_leftKeySelector.getKey(leftRow));
+      Object key = _leftKeySelector.getKey(leftRow);
       // NOTE: Empty key selector will always give same hash code.
-      List<Object[]> matchedRightRows = _broadcastRightTable.getOrDefault(key, null);
-      if (matchedRightRows == null) {
+      List<Object[]> rightRows = _broadcastRightTable.get(key);
+      if (rightRows == null) {
         if (needUnmatchedLeftRows()) {
           rows.add(joinRow(leftRow, null));
         }
         continue;
       }
       boolean hasMatchForLeftRow = false;
-      rows.ensureCapacity(rows.size() + matchedRightRows.size());
-      for (int i = 0; i < matchedRightRows.size(); i++) {
-        Object[] rightRow = matchedRightRows.get(i);
+      int numRightRows = rightRows.size();
+      rows.ensureCapacity(rows.size() + numRightRows);
+      for (int i = 0; i < numRightRows; i++) {
+        Object[] rightRow = rightRows.get(i);
         // TODO: Optimize this to avoid unnecessary object copy.
         Object[] resultRow = joinRow(leftRow, rightRow);
-        if (_joinClauseEvaluators.isEmpty() || _joinClauseEvaluators.stream().allMatch(
-            evaluator -> (Boolean) TypeUtils.convert(evaluator.apply(resultRow),
-                DataSchema.ColumnDataType.BOOLEAN))) {
+        if (_joinClauseEvaluators.isEmpty() || _joinClauseEvaluators.stream()
+            .allMatch(evaluator -> BooleanUtils.isTrueInternalValue(evaluator.apply(resultRow)))) {
           rows.add(resultRow);
           hasMatchForLeftRow = true;
           if (_matchedRightRows != null) {
-            HashSet<Integer> matchedRows = _matchedRightRows.computeIfAbsent(key, k -> new HashSet<>());
-            matchedRows.add(i);
+            _matchedRightRows.computeIfAbsent(key, k -> new BitSet(numRightRows)).set(i);
           }
         }
       }
@@ -299,7 +365,7 @@ public class HashJoinOperator extends MultiStageOperator {
     List<Object[]> rows = new ArrayList<>(container.size());
 
     for (Object[] leftRow : container) {
-      Key key = new Key(_leftKeySelector.getKey(leftRow));
+      Object key = _leftKeySelector.getKey(leftRow);
       // ANTI-JOIN only checks non-existence of the key
       if (!_broadcastRightTable.containsKey(key)) {
         rows.add(joinRow(leftRow, null));
