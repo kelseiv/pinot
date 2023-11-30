@@ -57,6 +57,9 @@ public class UpsertConfig extends BaseJsonConfig {
   @JsonPropertyDescription("Boolean column to indicate whether a records should be deleted")
   private String _deleteRecordColumn;
 
+  @JsonPropertyDescription("Boolean column to indicate whether a records is out-of-order")
+  private String _outOfOrderRecordColumn;
+
   @JsonPropertyDescription("Whether to use snapshot for fast upsert metadata recovery")
   private boolean _enableSnapshot;
 
@@ -71,6 +74,9 @@ public class UpsertConfig extends BaseJsonConfig {
 
   @JsonPropertyDescription("Custom configs for upsert metadata manager")
   private Map<String, String> _metadataManagerConfigs;
+
+  @JsonPropertyDescription("Whether to drop out-of-order record")
+  private boolean _dropOutOfOrderRecord;
 
   public UpsertConfig(Mode mode) {
     _mode = mode;
@@ -110,6 +116,11 @@ public class UpsertConfig extends BaseJsonConfig {
     return _deleteRecordColumn;
   }
 
+  @Nullable
+  public String getOutOfOrderRecordColumn() {
+    return _outOfOrderRecordColumn;
+  }
+
   public boolean isEnableSnapshot() {
     return _enableSnapshot;
   }
@@ -120,6 +131,10 @@ public class UpsertConfig extends BaseJsonConfig {
 
   public boolean isEnablePreload() {
     return _enablePreload;
+  }
+
+  public boolean isDropOutOfOrderRecord() {
+    return _dropOutOfOrderRecord;
   }
 
   @Nullable
@@ -177,9 +192,11 @@ public class UpsertConfig extends BaseJsonConfig {
   }
 
   public void setDeleteRecordColumn(String deleteRecordColumn) {
-    if (deleteRecordColumn != null) {
-      _deleteRecordColumn = deleteRecordColumn;
-    }
+    _deleteRecordColumn = deleteRecordColumn;
+  }
+
+  public void setOutOfOrderRecordColumn(String outOfOrderRecordColumn) {
+    _outOfOrderRecordColumn = outOfOrderRecordColumn;
   }
 
   public void setEnableSnapshot(boolean enableSnapshot) {
@@ -192,6 +209,10 @@ public class UpsertConfig extends BaseJsonConfig {
 
   public void setEnablePreload(boolean enablePreload) {
     _enablePreload = enablePreload;
+  }
+
+  public void setDropOutOfOrderRecord(boolean dropOutOfOrderRecord) {
+    _dropOutOfOrderRecord = dropOutOfOrderRecord;
   }
 
   public void setMetadataManagerClass(String metadataManagerClass) {

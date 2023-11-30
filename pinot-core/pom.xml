@@ -87,8 +87,8 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>commons-logging</groupId>
-      <artifactId>commons-logging</artifactId>
+      <groupId>org.slf4j</groupId>
+      <artifactId>jcl-over-slf4j</artifactId>
     </dependency>
     <dependency>
       <groupId>commons-lang</groupId>
@@ -147,6 +147,10 @@
     <dependency>
       <groupId>org.apache.datasketches</groupId>
       <artifactId>datasketches-java</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.dynatrace.hash4j</groupId>
+      <artifactId>hash4j</artifactId>
     </dependency>
     <dependency>
       <groupId>com.tdunning</groupId>
@@ -242,21 +246,25 @@
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
+
+    <!-- Lucene dependencies -->
+    <dependency>
+      <groupId>org.apache.lucene</groupId>
+      <artifactId>lucene-backward-codecs</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.apache.lucene</groupId>
       <artifactId>lucene-core</artifactId>
-      <version>${lucene.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.lucene</groupId>
       <artifactId>lucene-queryparser</artifactId>
-      <version>${lucene.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.lucene</groupId>
-      <artifactId>lucene-analyzers-common</artifactId>
-      <version>${lucene.version}</version>
+      <artifactId>lucene-analysis-common</artifactId>
     </dependency>
+    <!-- Lucene dependencies end -->
   </dependencies>
   <profiles>
     <profile>

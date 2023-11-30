@@ -40,7 +40,7 @@ else
     mvn clean install \
       -DskipTests -Dcheckstyle.skip -Dspotless.skip -Denforcer.skip -Dlicense.skip -Dmaven.plugin.appassembler.skip=true \
       -am -B -T 16 \
-      -P github-actions,no-integration-tests \
+      -P github-actions \
       -pl 'pinot-spi' \
       -pl 'pinot-segment-spi' \
       -pl 'pinot-common' \
@@ -53,8 +53,7 @@ else
     mvn clean install \
       -DskipTests -Dcheckstyle.skip -Dspotless.skip -Denforcer.skip -Dlicense.skip -Dmaven.plugin.appassembler.skip=true \
       -am -B -T 16 \
-      -P github-actions,no-integration-tests \
-      -pl '!pinot-integration-test-base' \
+      -P github-actions \
       -pl '!pinot-integration-tests' \
       -pl '!pinot-perf' \
       -pl '!pinot-distribution' || exit 1

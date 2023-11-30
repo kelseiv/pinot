@@ -18,6 +18,7 @@
  */
 package org.apache.pinot.segment.local.recordtransformer;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -67,14 +68,37 @@ public class CompositeTransformer implements RecordTransformer {
    *     Optional {@link SanitizationTransformer} after {@link NullValueTransformer} so that before sanitation, all
    *     values are non-null and follow the data types defined in the schema
    *   </li>
+   *   <li>
+   *     {@link SpecialValueTransformer} after {@link DataTypeTransformer} so that we already have the values complying
+   *      with the schema before handling special values and before {@link NullValueTransformer} so that it transforms
+   *      all the null values properly
+   *   </li>
    * </ul>
    */
+  public static List<RecordTransformer> getDefaultTransformers(TableConfig tableConfig, Schema schema) {
+    return Stream.of(new ExpressionTransformer(tableConfig, schema), new FilterTransformer(tableConfig),
+            new SchemaConformingTransformer(tableConfig, schema), new DataTypeTransformer(tableConfig, schema),
+            new TimeValidationTransformer(tableConfig, schema), new SpecialValueTransformer(schema),
+            new NullValueTransformer(tableConfig, schema), new SanitizationTransformer(schema)).filter(t -> !t.isNoOp())
+        .collect(Collectors.toList());
+  }
+
   public static CompositeTransformer getDefaultTransformer(TableConfig tableConfig, Schema schema) {
-    return new CompositeTransformer(
-        Stream.of(new ExpressionTransformer(tableConfig, schema), new FilterTransformer(tableConfig),
-                new SchemaConformingTransformer(tableConfig, schema), new DataTypeTransformer(tableConfig, schema),
-                new TimeValidationTransformer(tableConfig, schema), new NullValueTransformer(tableConfig, schema),
-                new SanitizationTransformer(schema)).filter(t -> !t.isNoOp()).collect(Collectors.toList()));
+    return new CompositeTransformer(getDefaultTransformers(tableConfig, schema));
+  }
+
+  /**
+   * Includes custom and default transformers.
+   * @param customTransformers
+   * @param tableConfig
+   * @param schema
+   * @return
+   */
+  public static CompositeTransformer composeAllTransformers(List<RecordTransformer> customTransformers,
+      TableConfig tableConfig, Schema schema) {
+    List<RecordTransformer> allTransformers = new ArrayList<>(customTransformers);
+    allTransformers.addAll(getDefaultTransformers(tableConfig, schema));
+    return new CompositeTransformer(allTransformers);
   }
 
   /**

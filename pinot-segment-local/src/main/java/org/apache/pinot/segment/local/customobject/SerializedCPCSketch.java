@@ -16,13 +16,31 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pinot.query.planner;
+package org.apache.pinot.segment.local.customobject;
+
+import java.util.Base64;
+import org.apache.datasketches.cpc.CpcSketch;
+
 
 /**
- * Metadata for a plan fragment. This class won't leave the query planner/broker side.
+ * Serialized and comparable version of CPC Sketch.
+ * Ordering is defined by the cardinality estimate and not the size
+ * of the underlying sketch.
  */
-public class PlanFragmentMetadata {
+public class SerializedCPCSketch implements Comparable<SerializedCPCSketch> {
+  private final CpcSketch _sketch;
 
-  public PlanFragmentMetadata() {
+  public SerializedCPCSketch(CpcSketch sketch) {
+    _sketch = sketch;
+  }
+
+  @Override
+  public int compareTo(SerializedCPCSketch other) {
+    return Double.compare(_sketch.getEstimate(), other._sketch.getEstimate());
+  }
+
+  @Override
+  public String toString() {
+    return Base64.getEncoder().encodeToString(_sketch.toByteArray());
   }
 }

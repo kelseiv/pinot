@@ -391,12 +391,12 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
     _serverMetrics.addMeteredTableValue(_tableStreamName, ServerMeter.REALTIME_CONSUMPTION_EXCEPTIONS,
         1L);
     if (_consecutiveErrorCount > MAX_CONSECUTIVE_ERROR_COUNT) {
-      _segmentLogger.warn("Stream transient exception when fetching messages, stopping consumption after {} attempts",
-          _consecutiveErrorCount, e);
+      _segmentLogger.warn("Stream transient exception when fetching messages, stopping consumption after "
+          + _consecutiveErrorCount + " attempts", e);
       throw e;
     } else {
-      _segmentLogger
-          .warn("Stream transient exception when fetching messages, retrying (count={})", _consecutiveErrorCount, e);
+      _segmentLogger.warn("Stream transient exception when fetching messages, retrying (count="
+          + _consecutiveErrorCount + ")", e);
       Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
       recreateStreamConsumer("Too many transient errors");
     }
@@ -444,6 +444,9 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
         // One such exception seen so far is java.net.SocketTimeoutException
         handleTransientStreamErrors(e);
         continue;
+      } catch (Throwable t) {
+        _segmentLogger.warn("Stream error when fetching messages, stopping consumption", t);
+        throw t;
       }
 
       boolean endCriteriaReached = processStreamEvents(messageBatch, idlePipeSleepTimeMillis);
@@ -934,7 +937,7 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
       SegmentZKPropsConfig segmentZKPropsConfig = new SegmentZKPropsConfig();
       segmentZKPropsConfig.setStartOffset(_segmentZKMetadata.getStartOffset());
       segmentZKPropsConfig.setEndOffset(_currentOffset.toString());
-      // lets convert the segment now
+      // let's convert the segment now
       RealtimeSegmentConverter converter =
           new RealtimeSegmentConverter(_realtimeSegment, segmentZKPropsConfig, tempSegmentFolder.getAbsolutePath(),
               _schema, _tableNameWithType, _tableConfig, _segmentZKMetadata.getSegmentName(),
@@ -951,8 +954,8 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
       }
       final long buildTimeMillis = now() - lockAcquireTimeMillis;
       final long waitTimeMillis = lockAcquireTimeMillis - startTimeMillis;
-      _segmentLogger
-          .info("Successfully built segment in {} ms, after lockWaitTime {} ms", buildTimeMillis, waitTimeMillis);
+      _segmentLogger.info("Successfully built segment (Column Mode: {}) in {} ms, after lockWaitTime {} ms",
+          converter.isColumnMajorEnabled(), buildTimeMillis, waitTimeMillis);
 
       File dataDir = new File(_resourceDataDir);
       File indexDir = new File(dataDir, _segmentNameStr);
@@ -1131,16 +1134,40 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
     }
   }
 
-  // Inform the controller that the server had to stop consuming due to an error.
-  protected void postStopConsumedMsg(String reason) {
-    do {
+  private static class ConsumptionStopIndicator {
+    final StreamPartitionMsgOffset _offset;
+    final String _segmentName;
+    final String _instanceId;
+    final Logger _logger;
+    final ServerSegmentCompletionProtocolHandler _protocolHandler;
+    final String _reason;
+    private ConsumptionStopIndicator(StreamPartitionMsgOffset offset, String segmentName, String instanceId,
+        ServerSegmentCompletionProtocolHandler protocolHandler, String reason, Logger logger) {
+      _offset = offset;
+      _segmentName = segmentName;
+      _instanceId = instanceId;
+      _protocolHandler = protocolHandler;
+      _logger = logger;
+      _reason = reason;
+    }
+
+    SegmentCompletionProtocol.Response postSegmentStoppedConsuming() {
       SegmentCompletionProtocol.Request.Params params = new SegmentCompletionProtocol.Request.Params();
-      params.withStreamPartitionMsgOffset(_currentOffset.toString()).withReason(reason).withSegmentName(_segmentNameStr)
+      params.withStreamPartitionMsgOffset(_offset.toString()).withReason(_reason).withSegmentName(_segmentName)
           .withInstanceId(_instanceId);
 
       SegmentCompletionProtocol.Response response = _protocolHandler.segmentStoppedConsuming(params);
+      _logger.info("Got response {}", response.toJsonString());
+      return response;
+    }
+  }
+  // Inform the controller that the server had to stop consuming due to an error.
+  protected void postStopConsumedMsg(String reason) {
+    ConsumptionStopIndicator indicator = new ConsumptionStopIndicator(_currentOffset,
+        _segmentNameStr, _instanceId, _protocolHandler, reason, _segmentLogger);
+    do {
+      SegmentCompletionProtocol.Response response = indicator.postSegmentStoppedConsuming();
       if (response.getStatus() == SegmentCompletionProtocol.ControllerResponseStatus.PROCESSED) {
-        _segmentLogger.info("Got response {}", response.toJsonString());
         break;
       }
       Uninterruptibles.sleepUninterruptibly(10, TimeUnit.SECONDS);
@@ -1435,6 +1462,8 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
             .setPartitionDedupMetadataManager(partitionDedupMetadataManager)
             .setUpsertComparisonColumns(tableConfig.getUpsertComparisonColumns())
             .setUpsertDeleteRecordColumn(tableConfig.getUpsertDeleteRecordColumn())
+            .setUpsertOutOfOrderRecordColumn(tableConfig.getOutOfOrderRecordColumn())
+            .setUpsertDropOutOfOrderRecord(tableConfig.isDropOutOfOrderRecord())
             .setFieldConfigList(tableConfig.getFieldConfigList());
 
     // Create message decoder
@@ -1486,9 +1515,26 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
       _realtimeTableDataManager.addSegmentError(_segmentNameStr, new SegmentErrorInfo(now(),
           "Failed to initialize segment data manager", e));
       _segmentLogger.warn(
-          "Calling controller to mark the segment as OFFLINE in Ideal State because of initialization error: '{}'",
+          "Scheduling task to call controller to mark the segment as OFFLINE in Ideal State due"
+           + " to initialization error: '{}'",
           e.getMessage());
-      postStopConsumedMsg("Consuming segment initialization error");
+      // Since we are going to throw exception from this thread (helix execution thread), the externalview
+      // entry for this segment will be ERROR. We allow time for Helix to make this transition, and then
+      // invoke controller API mark it OFFLINE in the idealstate.
+      new Thread(() -> {
+        ConsumptionStopIndicator indicator = new ConsumptionStopIndicator(_currentOffset, _segmentNameStr, _instanceId,
+            _protocolHandler, "Consuming segment initialization error", _segmentLogger);
+        try {
+          // Allow 30s for Helix to mark currentstate and externalview to ERROR, because
+          // we are about to receive an ERROR->OFFLINE state transition once we call
+          // postSegmentStoppedConsuming() method.
+          Thread.sleep(30_000);
+          indicator.postSegmentStoppedConsuming();
+        } catch (InterruptedException ie) {
+          // We got interrupted trying to post stop-consumed message. Give up at this point
+          return;
+        }
+      }).start();
       throw e;
     }
   }
@@ -1571,10 +1617,9 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
               Collections.emptyList(), /*maxWaitTimeMs=*/5000).size();
 
           if (numPartitionGroups != numPartitions) {
-            _segmentLogger.warn(
+            _segmentLogger.info(
                 "Number of stream partitions: {} does not match number of partitions in the partition config: {}, "
                     + "using number of stream " + "partitions", numPartitionGroups, numPartitions);
-            _serverMetrics.addMeteredTableValue(_tableNameWithType, ServerMeter.REALTIME_PARTITION_MISMATCH, 1);
             numPartitions = numPartitionGroups;
           }
         } catch (Exception e) {

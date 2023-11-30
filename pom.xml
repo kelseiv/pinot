@@ -134,41 +134,41 @@
     <swagger.version>1.6.9</swagger.version>
     <hadoop.version>3.2.4</hadoop.version>
     <antlr.version>4.6</antlr.version>
-    <jsonpath.version>2.7.0</jsonpath.version>
-    <jsonsmart.version>2.4.10</jsonsmart.version>
+    <jsonpath.version>2.8.0</jsonpath.version>
+    <jsonsmart.version>2.5.0</jsonsmart.version>
     <quartz.version>2.3.2</quartz.version>
     <calcite.version>1.30.0</calcite.version>
-    <lucene.version>8.2.0</lucene.version>
+    <lucene.version>9.8.0</lucene.version>
     <reflections.version>0.9.11</reflections.version>
     <!-- commons-configuration, hadoop-common, hadoop-client use commons-lang -->
     <commons-lang.version>2.6</commons-lang.version>
-    <!-- pinot-common, commons-configuration, hadoop-common, hadoop-client use commons-logging -->
-    <commons-logging.version>1.2</commons-logging.version>
     <!-- hadoop-common, spark-core use commons-net -->
-    <commons-net.version>3.1</commons-net.version>
+    <commons-net.version>3.10.0</commons-net.version>
     <!-- helix-core, spark-core use libraries from io.dropwizard.metrics -->
-    <dropwizard-metrics.version>4.2.2</dropwizard-metrics.version>
+    <dropwizard-metrics.version>4.2.22</dropwizard-metrics.version>
     <snappy-java.version>1.1.10.4</snappy-java.version>
-    <zstd-jni.version>1.5.2-3</zstd-jni.version>
+    <zstd-jni.version>1.5.5-6</zstd-jni.version>
     <lz4-java.version>1.8.0</lz4-java.version>
     <log4j.version>2.20.0</log4j.version>
-    <netty.version>4.1.94.Final</netty.version>
-    <reactivestreams.version>1.0.3</reactivestreams.version>
+    <slf4j.version>2.0.9</slf4j.version>
+    <netty.version>4.1.100.Final</netty.version>
+    <reactivestreams.version>1.0.4</reactivestreams.version>
     <jts.version>1.19.0</jts.version>
     <h3.version>4.1.1</h3.version>
     <jmh.version>1.26</jmh.version>
     <audienceannotations.version>0.13.0</audienceannotations.version>
     <clp-ffi.version>0.4.3</clp-ffi.version>
     <stax2-api.version>4.1</stax2-api.version>
-    <aws.sdk.version>2.20.94</aws.sdk.version>
+    <aws.sdk.version>2.20.137</aws.sdk.version>
     <joda-time.version>2.12.5</joda-time.version>
     <testng.version>7.8.0</testng.version>
+    <woodstox.version>6.4.0</woodstox.version>
 
     <!-- Sets the VM argument line used when unit tests are run. -->
     <argLine>-Xms4g -Xmx4g</argLine>
     <protobuf.version>3.24.3</protobuf.version>
-    <grpc.version>1.53.0</grpc.version>
-    <confluent.version>5.5.3</confluent.version>
+    <grpc.version>1.59.0</grpc.version>
+    <confluent.version>7.2.6</confluent.version>
 
     <!-- Checkstyle violation prop.-->
     <checkstyle.violation.severity>warning</checkstyle.violation.severity>
@@ -184,8 +184,16 @@
     <scala.version>2.12.18</scala.version>
     <scala.compat.version>2.12</scala.compat.version>
 
+    <!-- Configuration for Scala -->
+    <scala.version>2.12.18</scala.version>
+    <scala.compat.version>2.12</scala.compat.version>
+
     <flink.version>1.12.0</flink.version>
     <commons-configuration2.version>2.9.0</commons-configuration2.version>
+
+    <proto.google.common.protos.version>2.9.6</proto.google.common.protos.version>
+
+    <kotlin.stdlib.version>1.7.22</kotlin.stdlib.version>
   </properties>
 
   <profiles>
@@ -211,24 +219,6 @@
       <properties>
         <argLine>-Xms4g -Xmx4g -Dlog4j2.configurationFile=log4j2.xml</argLine>
       </properties>
-    </profile>
-    <!-- jfim: this profile is overridden in pinot-integration-tests -->
-    <profile>
-      <id>integration-tests-only</id>
-      <activation>
-        <activeByDefault>false</activeByDefault>
-      </activation>
-      <build>
-        <plugins>
-          <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-surefire-plugin</artifactId>
-            <configuration>
-              <skipTests>true</skipTests>
-            </configuration>
-          </plugin>
-        </plugins>
-      </build>
     </profile>
     <!-- Disable source release assembly for 'apache-release' profile. -->
     <profile>
@@ -270,6 +260,12 @@
         <groupId>org.apache.httpcomponents</groupId>
         <artifactId>httpclient</artifactId>
         <version>4.5.13</version>
+        <exclusions>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.httpcomponents</groupId>
@@ -483,11 +479,23 @@
         <groupId>commons-configuration</groupId>
         <artifactId>commons-configuration</artifactId>
         <version>1.10</version>
+        <exclusions>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-configuration2</artifactId>
         <version>${commons-configuration2.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>commons-io</groupId>
@@ -612,8 +620,13 @@
       <!-- log4j2 related dependencies -->
       <dependency>
         <groupId>org.slf4j</groupId>
+        <artifactId>jcl-over-slf4j</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
         <artifactId>slf4j-api</artifactId>
-        <version>2.0.9</version>
+        <version>${slf4j.version}</version>
       </dependency>
       <dependency>
         <groupId>org.apache.logging.log4j</groupId>
@@ -659,7 +672,7 @@
       <dependency>
         <groupId>org.yaml</groupId>
         <artifactId>snakeyaml</artifactId>
-        <version>2.0</version>
+        <version>2.2</version>
       </dependency>
       <dependency>
         <groupId>org.xerial.larray</groupId>
@@ -770,6 +783,10 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-text</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -810,6 +827,10 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-log4j12</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -845,6 +866,10 @@
           <exclusion>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -885,6 +910,10 @@
           <exclusion>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-util</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -951,6 +980,11 @@
         <groupId>org.apache.datasketches</groupId>
         <artifactId>datasketches-java</artifactId>
         <version>4.1.0</version>
+      </dependency>
+      <dependency>
+        <groupId>com.dynatrace.hash4j</groupId>
+        <artifactId>hash4j</artifactId>
+        <version>0.13.0</version>
       </dependency>
       <dependency>
         <groupId>com.tdunning</groupId>
@@ -1040,7 +1074,7 @@
       <dependency>
         <groupId>com.google.code.findbugs</groupId>
         <artifactId>jsr305</artifactId>
-        <version>3.0.0</version>
+        <version>3.0.2</version>
       </dependency>
       <dependency>
         <groupId>org.glassfish.jersey.containers</groupId>
@@ -1151,18 +1185,18 @@
       <dependency>
         <groupId>org.apache.maven.surefire</groupId>
         <artifactId>surefire-testng</artifactId>
-        <version>${surefire.versino}</version>
+        <version>${surefire.version}</version>
       </dependency>
       <dependency>
         <groupId>org.mockito</groupId>
         <artifactId>mockito-core</artifactId>
-        <version>5.3.1</version>
+        <version>5.5.0</version>
         <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>org.mockito</groupId>
         <artifactId>mockito-inline</artifactId>
-        <version>4.7.0</version>
+        <version>5.2.0</version>
         <scope>test</scope>
       </dependency>
       <dependency>
@@ -1205,7 +1239,7 @@
       <dependency>
         <groupId>com.google.code.gson</groupId>
         <artifactId>gson</artifactId>
-        <version>2.2.4</version>
+        <version>2.10.1</version>
       </dependency>
       <!-- kafka_2.10 & jmh-core use jopt-simple -->
       <dependency>
@@ -1217,11 +1251,6 @@
         <groupId>commons-lang</groupId>
         <artifactId>commons-lang</artifactId>
         <version>${commons-lang.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>commons-logging</groupId>
-        <artifactId>commons-logging</artifactId>
-        <version>${commons-logging.version}</version>
       </dependency>
       <dependency>
         <groupId>commons-net</groupId>
@@ -1240,6 +1269,11 @@
         <version>${protobuf.version}</version>
       </dependency>
       <dependency>
+        <groupId>com.google.protobuf</groupId>
+        <artifactId>protobuf-java-util</artifactId>
+        <version>${protobuf.version}</version>
+      </dependency>
+      <dependency>
         <groupId>io.grpc</groupId>
         <artifactId>grpc-netty-shaded</artifactId>
         <version>${grpc.version}</version>
@@ -1253,6 +1287,11 @@
         <groupId>io.grpc</groupId>
         <artifactId>grpc-stub</artifactId>
         <version>${grpc.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.api.grpc</groupId>
+        <artifactId>proto-google-common-protos</artifactId>
+        <version>${proto.google.common.protos.version}</version>
       </dependency>
       <!-- geo dependencies -->
       <dependency>
@@ -1273,7 +1312,7 @@
       <dependency>
         <groupId>com.mercateo</groupId>
         <artifactId>test-clock</artifactId>
-        <version>1.0.2</version>
+        <version>1.0.4</version>
         <scope>test</scope>
         <exclusions>
           <exclusion>
@@ -1349,6 +1388,45 @@
         <artifactId>flink-streaming-java_${scala.compat.version}</artifactId>
         <version>${flink.version}</version>
       </dependency>
+      <dependency>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <artifactId>kotlin-stdlib-jdk8</artifactId>
+        <version>${kotlin.stdlib.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <artifactId>kotlin-stdlib</artifactId>
+        <version>${kotlin.stdlib.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.woodstox</groupId>
+        <artifactId>woodstox-core</artifactId>
+        <version>${woodstox.version}</version>
+      </dependency>
+
+      <!-- Lucene dependencies -->
+      <dependency>
+        <groupId>org.apache.lucene</groupId>
+        <artifactId>lucene-backward-codecs</artifactId>
+        <version>${lucene.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.lucene</groupId>
+        <artifactId>lucene-core</artifactId>
+        <version>${lucene.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.lucene</groupId>
+        <artifactId>lucene-queryparser</artifactId>
+        <version>${lucene.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.lucene</groupId>
+        <artifactId>lucene-analysis-common</artifactId>
+        <version>${lucene.version}</version>
+      </dependency>
+      <!-- Lucene dependencies end -->
+
     </dependencies>
   </dependencyManagement>
   <build>
@@ -1390,7 +1468,7 @@
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>appassembler-maven-plugin</artifactId>
-          <version>1.10</version>
+          <version>2.1.0</version>
           <configuration>
             <binFileExtensions>
               <unix>.sh</unix>
@@ -1513,6 +1591,7 @@
               --add-opens=java.base/java.util=ALL-UNNAMED
               --add-exports=java.base/jdk.internal.util.random=ALL-UNNAMED
               --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+              -Dnet.bytebuddy.experimental=true
             </argLine>
           </configuration>
           <!-- Explicitly select the test provider, instead of relying on the classpath -->
@@ -1750,7 +1829,7 @@
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.9</version>
+        <version>0.8.11</version>
         <executions>
           <execution>
             <goals>
@@ -1769,6 +1848,7 @@
           </execution>
         </executions>
         <configuration>
+          <append>true</append>
           <includes>
             <include>org/apache/pinot/**/*</include>
           </includes>
@@ -1948,6 +2028,7 @@
             <exclude>**/*.ser</exclude>
             <exclude>**/*.v1</exclude>
             <exclude>**/*.v2</exclude>
+            <exclude>**/Text.lucene.index/**</exclude>
             <exclude>**/appAssemblerScriptTemplate</exclude>
             <exclude>doap_Pinot.rdf</exclude>
 
@@ -2020,6 +2101,7 @@
             <filter>
               <artifact>*:*</artifact>
               <excludes>
+                <exclude>module-info.class</exclude>
                 <exclude>META-INF/*.SF</exclude>
                 <exclude>META-INF/*.DSA</exclude>
                 <exclude>META-INF/*.RSA</exclude>
